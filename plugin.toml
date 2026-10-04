@@ -1,0 +1,7 @@
+schema = 1
+id = "herdr-tern-plugin"
+name = "Herdr for Tern"
+version = "0.1.0"
+description = "Open your existing Herdr sessions right inside Tern."
+icon = "terminal"
+window = "window.luau"
