@@ -1,0 +1,6 @@
+[tools]
+bun = "1.4.2"
+
+[tasks.test]
+description = "Smoke-test the plugin in an isolated Tern window"
+run = "bun test"
