@@ -4,12 +4,14 @@ Keep the plugin minimal: `plugin.toml` and one `window.luau` at the repository r
 
 ## Local smoke test
 
-Install desktop Tern and Herdr, then run:
+Use working desktop Tern and Herdr installations. Review mise's tool-pruning settings first; if running mise could prune unrelated tools, fix that setup or use Bun directly instead.
 
 ```sh
 mise install
 mise run test
 ```
+
+With Bun already installed, `bun test` works too. Set executable overrides in the shell for that route; Bun does not load `mise.local.toml`.
 
 The task runs `bun test`. It opens an isolated Tern window, creates a disposable Herdr session, checks input and pane reuse, then closes and removes its fixtures. It does not drive your existing Tern window or change your Herdr configuration.
 
