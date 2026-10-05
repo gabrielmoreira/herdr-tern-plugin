@@ -140,6 +140,7 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
       .then((text) => (JSON.parse(text).workspaces ?? []).length >= 3), Boolean);
     const enterStep = async () => {
       await control("plugins run plugin.herdr-tern-plugin.import");
+      await control('plugins expect "Choose a session:"');
       const { nodes } = await control("tree .sf-act");
       const row = nodes.find((node) => node.text.startsWith(session));
       expect(row).toBeDefined();
