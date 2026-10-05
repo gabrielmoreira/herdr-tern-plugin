@@ -2,9 +2,22 @@
 
 Your Herdr sessions, right inside Tern.
 
-**Open a session in a tab** and keep going inside Tern: its Herdr client runs in a Tern tab, with live control of the session's own workspaces, tabs, panes and running programs.
+Two palette commands, one picker. **Open Herdr in a Tab** keeps you working on a session inside Tern; **Import Herdr Session into Tern** copies one in. Both land on the same screen, with the command you picked coming first.
 
-**Import a running session into Tern** as a copy. The picker shows every session as a collapsible panel that carries its workspace and tab counts collapsed, and its workspaces expanded. Importing opens a second step that picks which workspaces to bring, **where they land**, and how: a **new Tern session** (the row spells out the name it will really take, number and all) or **a session that already exists**, in which case the picked tabs are added to it. Landing as all picked workspaces in one session (tabs in workspace order, named `workspace - tab` inside multi-tab workspaces), or as one Tern session per workspace. Each mirrored tab holds one pane per Herdr pane, running the same program in the same directory. Herdr keeps running.
+## Open a session in a tab
+
+The session's own Herdr client runs in a Tern tab: live control of its workspaces, tabs, panes and running programs, without leaving Tern. Open it again and the tab it already opened comes into focus.
+
+## Import a session into Tern
+
+A running session, copied into Tern panes — Herdr keeps running, the import is a copy, not a move.
+
+- **See what's inside first.** Every session shows up as a panel with its workspace and tab counts; expand it to see the workspaces.
+- **Pick what comes along.** Choose the workspaces to import — each row is its own choice, even when two share a name.
+- **Choose the landing.** A new session, whose row shows the exact name it will take, number and all — or any session that already exists, and the tabs are added right into it.
+- **One session, or one per workspace.** Tabs keep their workspace order and are named `workspace - tab` inside multi-tab workspaces; each Herdr pane becomes a Tern pane running the same program in the same directory.
+
+Anything that could not be built is reported in the summary on the picker, so nothing lands quietly.
 
 ## Get started
 
@@ -13,8 +26,6 @@ You'll need desktop Tern, Git, and Herdr. The plugin uses `herdr` from Tern's PA
 ```sh
 tern plugin install github.com/gabrielmoreira/herdr-tern-plugin
 ```
-
-Open Tern's command palette and choose **Open Herdr in a Tab** or **Import Herdr Session into Tern**. Both open the same picker; the command you chose comes first. Pick a session, then the action under it.
 
 ## Known issue
 
