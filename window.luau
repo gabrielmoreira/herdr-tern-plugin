@@ -1,6 +1,6 @@
 local ui = tern.ui
 local title = "Herdr for Tern"
-local opened, sessions, listed = {}, {}, {}
+local opened, sessions, session_list = {}, {}, {}
 local chosen
 local step = "sessions"
 local workspaces
@@ -29,6 +29,7 @@ local function action_button(label, act, tone)
 	return ui.el("button", { text = label, actions = { click = act }, role = "herdr-tern-plugin.action", tone = tone })
 end
 
+-- Herdr discovery: the binary the plugin launches, wherever it is installed.
 local function version_key(name)
 	local key = {}
 	for digits in string.gmatch(name, "%d+") do table.insert(key, tonumber(digits) or 0) end
@@ -122,6 +123,7 @@ local modes = {
 }
 local mode = "open"
 
+-- Picker UI: the canvas lifecycle plus the picker's rows and actions.
 local function own_picker(cx)
 	for _, canvas in cx.canvas:list() do
 		if canvas.owner == tern.plugin.id and canvas.title == title then return canvas.pane end
@@ -210,7 +212,7 @@ end
 -- clicking a section picks that session for the action under the list.
 local function session_sections()
 	local sections = {}
-	for _, session in ipairs(listed) do
+	for _, session in ipairs(session_list) do
 		local head = {
 			ui.span(session.name, "strong"),
 			ui.span("  " .. session_detail(session), "muted"),
@@ -419,14 +421,12 @@ local function matching(items, key, value)
 	return out
 end
 
-local function in_number_order(items)
-	table.sort(items, function(a, b) return (a.number or 0) < (b.number or 0) end)
-	return items
-end
-
-local function copy_of(items)
+-- A copy sorted by Herdr's public numbers: table.sort mutates in place, and
+-- the decoded snapshot the views were built from must stay as it arrived.
+local function sorted_by_number(items)
 	local out = {}
 	for _, item in ipairs(items or {}) do table.insert(out, item) end
+	table.sort(out, function(a, b) return (a.number or 0) < (b.number or 0) end)
 	return out
 end
 
@@ -528,14 +528,14 @@ local function import_into(cx, name, snapshot, wanted, split, destination)
 	cx.hosts:switch("local")
 	local sessions_made, tabs_made, panes_made, skipped = 0, 0, 0, {}
 	local groups = {}
-	for index, workspace in ipairs(in_number_order(copy_of(snapshot.workspaces))) do
+	for index, workspace in ipairs(sorted_by_number(snapshot.workspaces)) do
 		local label = workspace.label or ("workspace " .. tostring(workspace.number or 1))
 		-- The wanted set is keyed by workspace id, so two workspaces sharing
 		-- a label stay separate choices.
 		if wanted and not wanted[tostring(workspace.workspace_id or index)] then
 			table.insert(skipped, label .. " (not picked)")
 		else
-			local tabs = in_number_order(matching(snapshot.tabs, "workspace_id", workspace.workspace_id))
+			local tabs = sorted_by_number(matching(snapshot.tabs, "workspace_id", workspace.workspace_id))
 			if #tabs == 0 then
 				table.insert(skipped, label .. " (no tabs)")
 			else
@@ -635,11 +635,16 @@ local function import_session(cx, pane, name, wanted, split, destination)
 	end
 end
 
+-- Application flow: listing, the picker screens, open and the import step.
 local function refresh(cx, pane)
 	request += 1
 	local revision = request
-	sessions, listed = {}, {}
+	sessions, session_list = {}, {}
+	-- Discover the binary again on every refresh: Herdr may have been
+	-- updated or reinstalled since the last list.
 	herdr = nil
+	-- A refresh always starts on the session list: `plugins run` can land
+	-- here while the picker is on the import step, and those rows are stale.
 	step = "sessions"
 	local bin = herdr_bin()
 	draw(cx, pane, "Reading local Herdr sessions...")
@@ -665,16 +670,16 @@ local function refresh(cx, pane)
 					return
 				end
 				sessions[session.name] = session
-				table.insert(listed, session)
+				table.insert(session_list, session)
 			end
 			-- Keep the user's pick across refreshes, and start on the first
 			-- session so the actions are never shown without a target.
-			if not (chosen and sessions[chosen]) then chosen = listed[1] and listed[1].name or nil end
+			if not (chosen and sessions[chosen]) then chosen = session_list[1] and session_list[1].name or nil end
 			draw_picker(fresh, pane)
 			-- The per-session state reads leave the process hook: Tern disables
 			-- a plugin's hook past 50 ms, so each file is read in its own
 			-- staggered timer callback and the counts land as they are read.
-			for offset, session in ipairs(listed) do
+			for offset, session in ipairs(session_list) do
 				tern.timer(offset * 40, function(cx)
 					if revision ~= request then return end
 					local peek = saved_workspaces(session)
@@ -712,19 +717,22 @@ local function show(cx, kind)
 	refresh(cx, pane)
 end
 
-tern.command({ id = "open", title = "Open Herdr in a Tab", icon = "terminal", run = function(cx) show(cx, "open") end })
-
-tern.command({ id = "import", title = "Import Herdr Session into Tern", icon = "terminal", run = function(cx) show(cx, "import") end })
+-- A still-current Herdr client: a pane whose terminal is a live Herdr that
+-- has not exited, errored, or returned to the shell prompt.
+local function is_live_herdr_client(client)
+	local program = program_name(client and client.program or "")
+	return client ~= nil
+		and (client.kind == "terminal" or client.kind == "agent")
+		and (program == "herdr" or program == "herdr.exe")
+		and client.exited == nil and client.error == nil and client.at_prompt ~= true
+end
 
 -- Attach a session as a full Herdr client in its own Tern tab, reusing the one
 -- already open for it when it is still current.
 local function open_session(cx, pane, name)
 	local existing = opened[name]
 	local client = existing and cx.session:pane(existing)
-	local program = program_name(client and client.program or "")
-	if client and (client.kind == "terminal" or client.kind == "agent")
-		and (program == "herdr" or program == "herdr.exe")
-		and client.exited == nil and client.error == nil and client.at_prompt ~= true then
+	if is_live_herdr_client(client) then
 		cx.layout:focus(existing)
 		return
 	end
@@ -761,6 +769,8 @@ local function import_step(cx, pane, name)
 	-- An import always lands on the local host, so only its sessions can be a
 	-- destination; another host's session would be switched away from.
 	destinations = {}
+	-- No local host means the hosts could not be read; every session stays a
+	-- candidate so the step still opens instead of erroring out.
 	for _, session in ipairs(ok and listed_sessions or {}) do
 		if local_host == nil or session.host == local_host then table.insert(destinations, session) end
 	end
@@ -779,7 +789,7 @@ end
 tern.on("canvas_action", function(ev, cx)
 	if ev.owner ~= tern.plugin.id then return nil end
 	local pane = ev.pane
-	local name = if type(ev.value) == "string" then ev.value else ""
+	local value = if type(ev.value) == "string" then ev.value else ""
 	if ev.act == "refresh" then
 		refresh(cx, pane)
 		return true
@@ -790,8 +800,9 @@ tern.on("canvas_action", function(ev, cx)
 		return true
 	end
 	if ev.act == "pick" then
-		if sessions[name] then
-			chosen = name
+		local session_name = value
+		if sessions[session_name] then
+			chosen = session_name
 			step = "sessions"
 			draw_picker(cx, pane)
 		else
@@ -800,8 +811,9 @@ tern.on("canvas_action", function(ev, cx)
 		return true
 	end
 	if ev.act == "toggle" then
+		local key = value
 		for _, workspace in ipairs(workspaces or {}) do
-			if workspace.key == name then workspace.selected = not workspace.selected end
+			if workspace.key == key then workspace.selected = not workspace.selected end
 		end
 		draw_picker(cx, pane)
 		return true
@@ -812,25 +824,27 @@ tern.on("canvas_action", function(ev, cx)
 		return true
 	end
 	if ev.act == "dest" then
-		target = name
+		target = value
 		draw_picker(cx, pane)
 		return true
 	end
 	if ev.act == "open" then
-		if not valid_name(name) or not sessions[name] then
+		local session_name = value
+		if not valid_name(session_name) or not sessions[session_name] then
 			draw(cx, pane, "Session unavailable. Refresh the list.", { picker_actions() })
 			return true
 		end
-		open_session(cx, pane, name)
+		open_session(cx, pane, session_name)
 		return true
 	end
 	if ev.act == "import" then
-		if not valid_name(name) or not (sessions[name] and sessions[name].running) then
+		local session_name = value
+		if not valid_name(session_name) or not (sessions[session_name] and sessions[session_name].running) then
 			draw(cx, pane, "Session unavailable. Refresh the list.", { picker_actions() })
 			return true
 		end
-		chosen = name
-		import_step(cx, pane, name)
+		chosen = session_name
+		import_step(cx, pane, session_name)
 		return true
 	end
 	if ev.act == "import_run" then
@@ -850,8 +864,13 @@ tern.on("canvas_action", function(ev, cx)
 			end
 		end
 		step = "sessions"
-		import_session(cx, pane, chosen, wanted, ev.value == "split", target)
+		import_session(cx, pane, chosen, wanted, value == "split", target)
 		return true
 	end
 	return nil
 end)
+
+-- Registration: the two commands and the picker's action handler are the
+-- plugin's public entry points.
+tern.command({ id = "open", title = "Open Herdr in a Tab", icon = "terminal", run = function(cx) show(cx, "open") end })
+tern.command({ id = "import", title = "Import Herdr Session into Tern", icon = "terminal", run = function(cx) show(cx, "import") end })
