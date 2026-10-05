@@ -231,7 +231,7 @@ callback on a cold VM already carries loading the plugin itself.
 
 **What the plugin had to do instead.** Keep the process callback's synchronous
 work proportional: the session-list decode and one draw stay in the hook, and
-the per-session `session.json` reads moved to staggered `tern.after` timers, one
+the per-session `session.json` reads moved to staggered `tern.timer` callbacks, one
 file per callback, with the import step re-reading the chosen session's state
 so nothing acts on stale rows.
 

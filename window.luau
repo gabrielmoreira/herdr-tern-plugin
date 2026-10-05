@@ -680,7 +680,10 @@ local function refresh(cx, pane)
 					local peek = saved_workspaces(session)
 					if peek then
 						session.peek = peek
-						draw_picker(cx, own_picker(cx))
+						-- Only a picker that still exists gets the count: a
+						-- closed picker must not be re-opened by a landing read.
+						local pane = own_picker(cx)
+						if pane then draw_picker(cx, pane) end
 					end
 				end)
 			end
