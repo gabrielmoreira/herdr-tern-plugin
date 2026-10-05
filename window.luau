@@ -564,26 +564,26 @@ local function import_into(cx, name, snapshot, wanted, split, destination)
 		end
 		table.insert(targets, { name = "Herdr " .. name, plans = plans })
 	end
-	for _, target in ipairs(targets) do
-		if target.existing then
-			local switched, err = pcall(function() cx.sessions:switch(target.name) end)
+	for _, item in ipairs(targets) do
+		if item.existing then
+			local switched, err = pcall(function() cx.sessions:switch(item.name) end)
 			if not switched then
-				table.insert(skipped, target.name .. " (" .. tostring(err) .. ")")
+				table.insert(skipped, item.name .. " (" .. tostring(err) .. ")")
 			else
-				local tabs, panes, failed = build_plans(cx, target.plans)
+				local tabs, panes, failed = build_plans(cx, item.plans)
 				tabs_made += tabs
 				panes_made += panes
 				for _, title in ipairs(failed) do table.insert(skipped, title) end
 			end
 		else
-			target.name = free_session_name(cx, target.name)
-			local created, session = pcall(function() return cx.sessions:create({ name = target.name }) end)
+			item.name = free_session_name(cx, item.name)
+			local created, session = pcall(function() return cx.sessions:create({ name = item.name }) end)
 			if not created or type(session) ~= "table" then
-				table.insert(skipped, target.name .. " (" .. tostring(session) .. ")")
+				table.insert(skipped, item.name .. " (" .. tostring(session) .. ")")
 			else
 				sessions_made += 1
 				local stray = initial_pane(cx, session.id)
-				local tabs, panes, failed = build_plans(cx, target.plans)
+				local tabs, panes, failed = build_plans(cx, item.plans)
 				tabs_made += tabs
 				panes_made += panes
 				for _, title in ipairs(failed) do table.insert(skipped, title) end
