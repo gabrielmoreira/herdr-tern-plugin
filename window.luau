@@ -126,11 +126,29 @@ local modes = {
 local mode = "open"
 
 -- Picker UI: the canvas lifecycle plus the picker's rows and actions.
+-- The picker canvas. A reload can race the canvas replica: the first command
+-- in the new VM may not see the old canvas, open a second one, and then every
+-- draw and keyed set would land in whichever the list happens to name first
+-- while the user looks at the other. Prefer the picker sharing the focused
+-- pane's tab, keep that one, and close the duplicates.
 local function own_picker(cx)
+	local pickers = {}
 	for _, canvas in cx.canvas:list() do
-		if canvas.owner == tern.plugin.id and canvas.title == title then return canvas.pane end
+		if canvas.owner == tern.plugin.id and canvas.title == title then table.insert(pickers, canvas.pane) end
 	end
-	return nil
+	if #pickers == 0 then return nil end
+	if #pickers == 1 then return pickers[1] end
+	local focused = cx.session:focused()
+	local tab = focused and cx.session:tab_of(focused)
+	local keep
+	for _, pane in ipairs(pickers) do
+		if tab and cx.session:tab_of(pane) == tab then keep = pane end
+	end
+	keep = keep or pickers[#pickers]
+	for _, pane in ipairs(pickers) do
+		if pane ~= keep then pcall(function() cx.layout:close(pane) end) end
+	end
+	return keep
 end
 
 -- Draw through canvas:set, which the daemon authorises from the stored creator
