@@ -2,6 +2,10 @@
 
 Keep the plugin minimal: `plugin.toml` and one `window.luau` at the repository root. Use English. Do not add a wrapper CLI or generated SDK files.
 
+## Canvas updates
+
+Draw with `cx.canvas:set` and treat a thrown error as the failure signal. Do not gate drawing on `cx.canvas:get`: that reads the window's replica, which can still be empty when a process callback runs, and a guard on it silently drops the update with nothing logged.
+
 ## Local smoke test
 
 Use working desktop Tern and Herdr installations. Review mise's tool-pruning settings first; if running mise could prune unrelated tools, fix that setup or use Bun directly instead.

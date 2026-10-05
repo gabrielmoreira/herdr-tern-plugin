@@ -1,7 +1,7 @@
 local ui = tern.ui
 local title = "Herdr for Tern"
 local opened, sessions = {}, {}
-local picker, request = nil, 0
+local request = 0
 
 local function valid_name(name)
 	return type(name) == "string" and #name > 0 and #name <= 64
@@ -12,81 +12,87 @@ local function button(label, action)
 	return ui.el("button", { text = label, actions = { click = action } })
 end
 
-local function owned(cx, pane)
-	local canvas = pane and cx.canvas:get(pane)
-	return canvas ~= nil and canvas.owner == tern.plugin.id
-end
-
-local function update(cx, pane, message, rows)
-	if not owned(cx, pane) then return end
+-- Draw through canvas:set, which the daemon authorises from the stored creator
+-- id. Do not gate on canvas:get: this window's replica of a canvas can still be
+-- empty when a process callback runs, and treating that as "not ours" dropped
+-- every update, leaving the picker on its first line with nothing logged.
+local function draw(cx, pane, message, rows)
 	local children = { ui.text(message) }
 	for _, row in rows or {} do table.insert(children, row) end
 	table.insert(children, button("Refresh sessions", "refresh"))
-	cx.canvas:set(pane, { view = ui.card(title, children) })
+	local ok, err = pcall(cx.canvas.set, cx.canvas, pane, { view = ui.card(title, children) })
+	if not ok then tern.log.warn("Herdr for Tern: could not draw the session picker", tostring(err)) end
+	return ok
+end
+
+local function own_picker(cx)
+	for _, canvas in cx.canvas:list() do
+		if canvas.owner == tern.plugin.id and canvas.title == title then return canvas.pane end
+	end
+	return nil
 end
 
 local function refresh(cx, pane)
 	request += 1
 	local revision = request
 	sessions = {}
-	update(cx, pane, "Reading local Herdr sessions...")
+	draw(cx, pane, "Reading local Herdr sessions...")
 	local ok, err = pcall(function()
 		tern.process.run({ "herdr", "session", "list", "--json" }, { timeout_ms = 10000 }, function(result, fresh)
-			if not fresh or revision ~= request or not owned(fresh, pane) then return end
+			if revision ~= request then return end
+			if not fresh then
+				tern.log.warn("Herdr for Tern: the session list had no window context to draw in")
+				return
+			end
 			if result.timed_out or result.status ~= 0 then
-				update(fresh, pane, "Could not list sessions: " .. (if result.timed_out then "Herdr timed out." else string.sub(result.stderr, 1, 1500)))
+				draw(fresh, pane, "Could not list sessions: " .. (if result.timed_out then "Herdr timed out." else string.sub(result.stderr, 1, 1500)))
 				return
 			end
 			local decoded, data = pcall(tern.json.decode, result.stdout)
 			if not decoded or type(data) ~= "table" or type(data.sessions) ~= "table" then
-				update(fresh, pane, "Herdr returned an invalid session list.")
+				draw(fresh, pane, "Herdr returned an invalid session list.")
 				return
 			end
 			local rows = {}
 			for _, session in data.sessions do
 				if type(session) ~= "table" or not valid_name(session.name) then
-					update(fresh, pane, "Herdr returned an unsupported session name.")
+					draw(fresh, pane, "Herdr returned an unsupported session name.")
 					return
 				end
 				sessions[session.name] = session
-				local status = if session.running then "running" else "saved; starts on open"
+				local state = if session.running then "running" else "saved; starts on open"
 				table.insert(rows, if session.connection_error then ui.text(session.name .. ": " .. tostring(session.connection_error))
-					else button(session.name .. " (" .. status .. ")", "open." .. session.name))
+					else button(session.name .. " (" .. state .. ")", "open." .. session.name))
 			end
-			update(fresh, pane, if #rows == 0 then "No local sessions found." else "Choose a session:", rows)
+			draw(fresh, pane, if #rows == 0 then "No local sessions found." else "Choose a session:", rows)
 		end)
 	end)
-	if not ok then update(cx, pane, "Could not run herdr. Check Tern's PATH. " .. tostring(err)) end
+	if not ok then draw(cx, pane, "Could not run herdr. Check Tern's PATH. " .. tostring(err)) end
 end
 
 tern.command({ id = "open", title = "Open Herdr Session", icon = "terminal", run = function(cx)
 	-- Listing and attaching must use the same local host.
 	cx.hosts:switch("local")
-	if not owned(cx, picker) then
-		picker = nil
-		for _, canvas in cx.canvas:list() do
-			if canvas.owner == tern.plugin.id and canvas.title == title then picker = canvas.pane; break end
-		end
-	end
-	if picker then
-		cx.layout:focus(picker)
+	local pane = own_picker(cx)
+	if pane then
+		cx.layout:focus(pane)
 	else
-		local pane, err = cx.canvas:open({ title = title, view = ui.text("Reading local Herdr sessions..."), how = "tab",
+		local opened_pane, err = cx.canvas:open({ title = title, view = ui.text("Reading local Herdr sessions..."), how = "tab",
 			about = "Attach existing local Herdr sessions. Their tabs, panes and programs stay in Herdr." })
-		if not pane then cx:toast("error", "Herdr session picker unavailable", err or "Canvases unavailable."); return end
-		picker = pane
+		if not opened_pane then cx:toast("error", "Herdr session picker unavailable", err or "Canvases unavailable."); return end
+		pane = opened_pane
 	end
-	refresh(cx, picker)
+	refresh(cx, pane)
 end })
 
 tern.on("canvas_action", function(ev, cx)
-	if ev.owner ~= tern.plugin.id or not owned(cx, ev.pane) then return nil end
+	if ev.owner ~= tern.plugin.id then return nil end
 	if ev.act == "refresh" then refresh(cx, ev.pane); return true end
 	local name = string.match(ev.act, "^open%.(.+)$")
 	if not name then return nil end
 	local session = sessions[name]
 	if not valid_name(name) or not session or session.connection_error then
-		update(cx, ev.pane, "Session unavailable. Refresh the list.")
+		draw(cx, ev.pane, "Session unavailable. Refresh the list.")
 		return true
 	end
 	local existing = opened[name]
@@ -102,7 +108,7 @@ tern.on("canvas_action", function(ev, cx)
 		return cx.hosts:terminal("local", { command = "herdr --session=" .. name })
 	end)
 	if not ok then
-		update(cx, ev.pane, "Could not open " .. name .. ": " .. tostring(terminal))
+		draw(cx, ev.pane, "Could not open " .. name .. ": " .. tostring(terminal))
 	else
 		opened[name] = terminal
 		local tab = cx.session:tab_of(terminal)
