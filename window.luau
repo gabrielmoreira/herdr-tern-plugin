@@ -12,6 +12,8 @@ local destinations
 -- Defined further down; the destination row needs it before it is assigned.
 local free_session_name
 local request = 0
+-- Count reads in flight, cancelled when a newer refresh starts.
+local pending = {}
 local importing = 0
 local herdr
 local searched = {}
@@ -209,33 +211,38 @@ end
 -- One collapsible section per session: collapsed it carries the counts,
 -- expanded it shows the workspaces the session holds. The key keeps a
 -- section's identity, so the user's expansion survives refreshes, and
--- clicking a section picks that session for the action under the list.
+-- clicking a section picks that session for the action under the list. A
+-- landing count replaces just this section through a keyed canvas:set.
+local function session_section(session)
+	local head = {
+		ui.span(session.name, "strong"),
+		ui.span("  " .. session_detail(session), "muted"),
+	}
+	local rows = {}
+	for _, workspace in ipairs(session.peek or {}) do
+		table.insert(rows, {
+			label = { ui.span(workspace.label) },
+			detail = workspace.tabs .. " tab(s)",
+			icon = "terminal",
+		})
+	end
+	local inside = if #rows > 0
+		then ui.list(rows)
+		else ui.text({ ui.span("No saved workspaces to show.", "muted") })
+	local node = ui.section(head, { inside })
+	local props = node.p or {}
+	props.key = session.name
+	props.collapsible = true
+	props.collapsed = session.name ~= chosen
+	props.actions = { click = "pick=" .. session.name }
+	node.p = props
+	return node
+end
+
 local function session_sections()
 	local sections = {}
 	for _, session in ipairs(session_list) do
-		local head = {
-			ui.span(session.name, "strong"),
-			ui.span("  " .. session_detail(session), "muted"),
-		}
-		local rows = {}
-		for _, workspace in ipairs(session.peek or {}) do
-			table.insert(rows, {
-				label = { ui.span(workspace.label) },
-				detail = workspace.tabs .. " tab(s)",
-				icon = "terminal",
-			})
-		end
-		local inside = if #rows > 0
-			then ui.list(rows)
-			else ui.text({ ui.span("No saved workspaces to show.", "muted") })
-		local node = ui.section(head, { inside })
-		local props = node.p or {}
-		props.key = session.name
-		props.collapsible = true
-		props.collapsed = session.name ~= chosen
-		props.actions = { click = "pick=" .. session.name }
-		node.p = props
-		table.insert(sections, node)
+		table.insert(sections, session_section(session))
 	end
 	if #sections == 0 then return ui.text({ ui.span("No local sessions found.", "muted") }) end
 	return ui.col(sections)
@@ -639,6 +646,10 @@ end
 local function refresh(cx, pane)
 	request += 1
 	local revision = request
+	-- Cancel count reads still in flight: their callbacks would no-op on the
+	-- revision guard, but cancelling drops their reads too.
+	for _, handle in ipairs(pending) do handle:cancel() end
+	table.clear(pending)
 	sessions, session_list = {}, {}
 	-- Discover the binary again on every refresh: Herdr may have been
 	-- updated or reinstalled since the last list.
@@ -680,7 +691,7 @@ local function refresh(cx, pane)
 			-- a plugin's hook past 50 ms, so each file is read in its own
 			-- staggered timer callback and the counts land as they are read.
 			for offset, session in ipairs(session_list) do
-				tern.timer(offset * 40, function(cx)
+				table.insert(pending, tern.timer(offset * 40, function(cx)
 					if revision ~= request then return end
 					local peek = saved_workspaces(session)
 					if peek then
@@ -688,9 +699,16 @@ local function refresh(cx, pane)
 						-- Only a picker that still exists gets the count: a
 						-- closed picker must not be re-opened by a landing read.
 						local pane = own_picker(cx)
-						if pane then draw_picker(cx, pane) end
+						if pane then
+							-- A keyed set replaces just this session's section,
+							-- so no other row is rebuilt for one count.
+							local ok = pcall(cx.canvas.set, cx.canvas, pane, { set = { [session.name] = session_section(session) } })
+							-- A stale handle falls back to a full draw; a picker
+							-- that closed since the check is left alone.
+							if not ok and own_picker(cx) then draw_picker(cx, pane) end
+						end
 					end
-				end)
+				end))
 			end
 		end)
 	end)
@@ -874,3 +892,7 @@ end)
 -- plugin's public entry points.
 tern.command({ id = "open", title = "Open Herdr in a Tab", icon = "terminal", run = function(cx) show(cx, "open") end })
 tern.command({ id = "import", title = "Import Herdr Session into Tern", icon = "terminal", run = function(cx) show(cx, "import") end })
+
+-- A chord for each command: `h` opens the picker, `i` goes to the import step.
+tern.bind(if tern.runtime.os == "macos" then "cmd+alt+shift+h" else "ctrl+alt+shift+h", "plugin.herdr-tern-plugin.open")
+tern.bind(if tern.runtime.os == "macos" then "cmd+alt+shift+i" else "ctrl+alt+shift+i", "plugin.herdr-tern-plugin.import")

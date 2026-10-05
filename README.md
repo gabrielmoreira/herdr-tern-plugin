@@ -8,7 +8,7 @@ Switching from Herdr to Tern? Bring your sessions with you.
 
 If you would rather keep using a session from inside Tern for a while, **Open Herdr in a Tab** runs its Herdr client in a Tern tab instead.
 
-Both commands are in Tern's palette, found by searching `herdr`.
+Both commands are in Tern's palette, found by searching `herdr`; they also have chords, `ctrl+alt+shift+h` to open the picker and `ctrl+alt+shift+i` to go straight to the import (`cmd+alt+shift` on macOS).
 
 ## Get started
 
