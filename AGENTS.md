@@ -8,7 +8,7 @@ Draw with `cx.canvas:set` and treat a thrown error as the failure signal. Do not
 
 ## Finding herdr
 
-Tern looks a program up on the PATH of its own process, and a desktop launch can have a smaller one than your shell, so the bare name can be missing there. The plugin therefore checks `HERDR_BIN`, then `HERDR_BIN_PATH` (which Herdr itself sets), then `~/.herdr/packages/standalone/current`, then the newest release under `~/.herdr/packages/standalone/releases`, and only then the bare name. Resolve once and reuse the result for both the session list and the attach command.
+Tern looks a program up on the PATH of its own process, and a desktop launch can have a smaller one than your shell, so the bare name can be missing there. The plugin therefore checks `HERDR_BIN`, then `HERDR_BIN_PATH` (which Herdr itself sets), then the directories Herdr's installer and the package managers use (`~/.herdr/packages/standalone/current` and `bin`, `~/.local/bin`, mise shims, `~/.cargo/bin`, Nix profiles, Homebrew and `/usr/local/bin`), then the newest release under `~/.herdr/packages/standalone/releases`, and only then the bare name. It resolves once, reuses the path for both the session list and the attach command, and logs every directory it searched when the process cannot start.
 
 ## Local smoke test
 

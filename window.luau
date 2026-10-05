@@ -3,6 +3,7 @@ local title = "Herdr for Tern"
 local opened, sessions = {}, {}
 local request = 0
 local herdr
+local searched = {}
 
 local function valid_name(name)
 	return type(name) == "string" and #name > 0 and #name <= 64
@@ -35,28 +36,54 @@ local function herdr_in(directory)
 	return nil
 end
 
--- Tern looks the program up on the PATH of its own process, which a desktop
--- launch can have smaller than the shell's, so a bare `herdr` may be missing
--- there. Herdr's own install layout is checked before giving up.
+-- Where Herdr's own installer and the package managers put the binary. Tern
+-- looks a program up on the PATH of its own process, which a desktop launch can
+-- have smaller than the shell's, so a bare `herdr` can be missing there.
+local function herdr_dirs()
+	local home = tern.getenv("USERPROFILE") or tern.getenv("HOME")
+	local local_app_data = tern.getenv("LOCALAPPDATA")
+	local dirs = {}
+	if home then
+		local standalone = home .. "/.herdr/packages/standalone"
+		table.insert(dirs, standalone .. "/current")
+		table.insert(dirs, standalone .. "/bin")
+		table.insert(dirs, home .. "/.local/bin")
+		table.insert(dirs, home .. "/.local/share/mise/shims")
+		table.insert(dirs, home .. "/.cargo/bin")
+		table.insert(dirs, home .. "/.nix-profile/bin")
+	end
+	if local_app_data then table.insert(dirs, local_app_data .. "/mise/shims") end
+	for _, dir in { "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/nix/var/nix/profiles/default/bin" } do
+		table.insert(dirs, dir)
+	end
+	return dirs
+end
+
 local function find_herdr()
+	local tried = {}
 	for _, name in { "HERDR_BIN", "HERDR_BIN_PATH" } do
 		local explicit = tern.getenv(name)
-		if explicit and #explicit > 0 and tern.fs.exists(explicit) then return explicit end
+		if explicit and #explicit > 0 then
+			if tern.fs.exists(explicit) then return explicit end
+			table.insert(tried, name .. "=" .. explicit)
+		end
+	end
+	for _, directory in herdr_dirs() do
+		local path = herdr_in(directory)
+		if path then return path end
+		table.insert(tried, directory)
 	end
 	local home = tern.getenv("USERPROFILE") or tern.getenv("HOME")
-	local standalone = home and (home .. "/.herdr/packages/standalone")
-	if standalone then
-		local current = herdr_in(standalone .. "/current")
-		if current then return current end
-		local listed, entries = pcall(tern.fs.list, standalone .. "/releases")
-		local best, best_key
-		for _, entry in listed and entries or {} do
-			local path = herdr_in(standalone .. "/releases/" .. entry)
-			local key = version_key(entry)
-			if path and (not best or is_newer(key, best_key)) then best, best_key = path, key end
-		end
-		if best then return best end
+	local releases = home and (home .. "/.herdr/packages/standalone/releases")
+	local listed, entries = pcall(tern.fs.list, releases or "")
+	local best, best_key
+	for _, entry in listed and entries or {} do
+		local path = herdr_in(releases .. "/" .. entry)
+		local key = version_key(entry)
+		if path and (not best or is_newer(key, best_key)) then best, best_key = path, key end
 	end
+	if best then return best end
+	searched = tried
 	return "herdr"
 end
 
@@ -133,6 +160,7 @@ local function refresh(cx, pane)
 		end)
 	end)
 	if not ok then
+		tern.log.warn("Herdr for Tern: could not run " .. bin, tostring(err), "searched " .. table.concat(searched, ", "))
 		draw(cx, pane, "Could not run " .. bin .. ". Put Herdr on the PATH Tern sees, or set HERDR_BIN. " .. tostring(err))
 	end
 end
