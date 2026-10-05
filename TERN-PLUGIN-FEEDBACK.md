@@ -207,3 +207,35 @@ like a plugin bug, and it cost real time to separate from one (see issue 6).
 document the coordinate space each command uses. A `click` variant that takes a
 `tree`/`a11y` selector, or an action-by-key invocation (issue 6), would remove
 the ambiguity entirely.
+
+## 9. A process hook that runs long once disables the plugin until reload
+
+**Symptom.** A run of the plugin's own smoke test on another machine (Tern
+`0.4.5`, Herdr `0.9.3`, cold start) logged:
+
+```text
+WARN tern::plugin: plugin hook exceeded its budget; disabled until reload
+plugin=herdr-tern-plugin hook=process
+runtime error: tern: process exceeded 50 ms
+```
+
+The picker stayed on its loading message and never listed a session until the
+plugin was reloaded.
+
+**Impact.** One slow callback (a cold VM, a slow disk, a long session list)
+turns the plugin off for the rest of the window's life, with nothing on screen
+to tell the user and nothing the plugin can catch: the disable happens outside
+plugin code, and the plugin's own recovery paths never run again. A plugin
+cannot even keep its synchronous work small enough by design, because the first
+callback on a cold VM already carries loading the plugin itself.
+
+**What the plugin had to do instead.** Keep the process callback's synchronous
+work proportional: the session-list decode and one draw stay in the hook, and
+the per-session `session.json` reads moved to staggered `tern.after` timers, one
+file per callback, with the import step re-reading the chosen session's state
+so nothing acts on stale rows.
+
+**Ask.** One of: raise or remove the 50 ms budget for process callbacks;
+disable only the offending hook invocation instead of the plugin until reload;
+or surface the disable in the pane and to the plugin (an event, or a documented
+error) so a plugin can tell the user instead of dying silently.

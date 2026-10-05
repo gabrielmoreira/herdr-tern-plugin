@@ -664,7 +664,6 @@ local function refresh(cx, pane)
 					draw(fresh, pane, "Herdr returned an unsupported session name.")
 					return
 				end
-				session.peek = saved_workspaces(session)
 				sessions[session.name] = session
 				table.insert(listed, session)
 			end
@@ -672,6 +671,19 @@ local function refresh(cx, pane)
 			-- session so the actions are never shown without a target.
 			if not (chosen and sessions[chosen]) then chosen = listed[1] and listed[1].name or nil end
 			draw_picker(fresh, pane)
+			-- The per-session state reads leave the process hook: Tern disables
+			-- a plugin's hook past 50 ms, so each file is read in its own
+			-- staggered timer callback and the counts land as they are read.
+			for offset, session in ipairs(listed) do
+				tern.after(offset * 40, function(cx)
+					if revision ~= request then return end
+					local peek = saved_workspaces(session)
+					if peek then
+						session.peek = peek
+						draw_picker(cx, own_picker(cx))
+					end
+				end)
+			end
 		end)
 	end)
 	if not ok then
@@ -728,7 +740,14 @@ end
 -- The workspace rows of the import step, all picked to start with; a missing
 -- saved state leaves them unreadable and the import falls back to everything.
 local function import_step(cx, pane, name)
-	local peek = sessions[name] and sessions[name].peek
+	-- The counts land on timers, so read the chosen session's state again
+	-- here: the picker must not offer workspaces from a stale read.
+	local entry = sessions[name]
+	if entry then
+		local fresh = saved_workspaces(entry)
+		if fresh then entry.peek = fresh end
+	end
+	local peek = entry and entry.peek
 	target = nil
 	local hosts_ok, hosts = pcall(function() return cx.hosts:list() end)
 	local local_host
