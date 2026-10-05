@@ -4,7 +4,7 @@ Switching from Herdr to Tern? Bring your sessions with you.
 
 ![The Herdr picker in Tern](assets/picker.png)
 
-**Import Herdr Session into Tern** copies a running session into Tern. The picker lists every local session with its workspace and tab counts, and the workspaces inside each one, so you can see what you are bringing over before anything runs. Pick which workspaces come along, choose where they land (a new session, whose row shows the exact name it will take, or a session that already exists), and whether they arrive as one session or one per workspace. Herdr keeps running: it is a copy, not a move.
+**Import Herdr Session into Tern** copies a running session into Tern. The picker lists every local session with its workspace and tab counts, and the workspaces inside each one, so you can see what you are bringing over before anything runs. Pick which workspaces come along, choose where they land (a new session, whose row shows the exact name it will take, or a session that already exists), and how they arrive: one session, one session per workspace, or as panes, where each workspace becomes a tab holding its Herdr tabs as panes laid out in columns. Herdr keeps running: it is a copy, not a move.
 
 If you would rather keep using a session from inside Tern for a while, **Open Herdr in a Tab** runs its Herdr client in a Tern tab instead.
 

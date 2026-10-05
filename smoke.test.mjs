@@ -253,6 +253,25 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
     const grown = await mirrorOf(`Herdr ${session}`);
     expect(grown.tabs).toEqual([...smokeTabs, ...smokeTabs].sort());
     expect((await control("state")).sessions.some((item) => item.name === `Herdr ${session} (2)`)).toBe(false);
+
+    // Panes mode: the same workspace, its tabs as panes of one Tern tab.
+    {
+      const { nodes } = await enterStep();
+      await click(nodes.find((node) => node.text === "Plugin gamma1 tab(s)"));
+      const { nodes: between } = await control("tree .sf-act");
+      await click(between.find((node) => node.text === "Plugin smoke1 tab(s)"));
+      const { nodes: acting } = await control("tree .sf-act");
+      const panes = acting.find((node) => node.text === "Import 1 workspace as panes (2 panes)");
+      expect(panes).toBeDefined();
+      await click(panes);
+    }
+    await waitFor(() => control("state"), (state) => (state.sessions ?? []).some((item) => item.name === `Herdr ${session} (2)`));
+    const panesMirror = await mirrorOf(`Herdr ${session} (2)`);
+    expect(panesMirror.tabs).toEqual(["Plugin smoke"]);
+    // Panes mode keeps each tab's first pane: Alpha's root, and Beta's pane.
+    const betaCwd = (await api("pane", "list")).result.panes
+      .find((pane) => pane.pane_id === second.root_pane.pane_id)?.cwd;
+    expect(panesMirror.cwds).toEqual([normalize(import.meta.dir), normalize(betaCwd)].sort());
   } finally {
     const cleanup = await Promise.allSettled([
       guiReady ? control("quit") : Promise.resolve(),

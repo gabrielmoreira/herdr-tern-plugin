@@ -348,18 +348,24 @@ local function picker_actions()
 				if count > 0 then
 					table.insert(actions, action_button(
 						"Import " .. counted(count, "workspace") .. ' into "' .. target .. '" (' .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
+					table.insert(actions, action_button(
+						"Import " .. counted(count, "workspace") .. ' into "' .. target .. '" as panes (' .. counted(tabs, "pane") .. ")", "import_run=panes"))
 				end
 			elseif count > 0 then
 				table.insert(actions, action_button(
 					"Import " .. counted(count, "workspace") .. " in one session (" .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
 				table.insert(actions, action_button(
 					"Import " .. counted(count, "workspace") .. " as " .. counted(count, "session") .. " (" .. counted(tabs, "tab") .. ")", "import_run=split"))
+				table.insert(actions, action_button(
+					"Import " .. counted(count, "workspace") .. " as panes (" .. counted(tabs, "pane") .. ")", "import_run=panes"))
 			end
 		elseif target then
 			table.insert(actions, action_button('Import all workspaces into "' .. target .. '"', "import_run=one", "accent"))
+			table.insert(actions, action_button('Import all workspaces into "' .. target .. '" as panes', "import_run=panes"))
 		else
 			table.insert(actions, action_button("Import all workspaces in one session", "import_run=one", "accent"))
 			table.insert(actions, action_button("Import all workspaces as sessions", "import_run=split"))
+			table.insert(actions, action_button("Import all workspaces as panes", "import_run=panes"))
 		end
 		table.insert(actions, action_button("Back", "back"))
 		return ui.row(actions)
@@ -506,32 +512,66 @@ local function plan_tabs(label, tabs, snapshot)
 	return plans
 end
 
+-- Panes mode: one plan per workspace, and each Herdr tab contributes only its
+-- first pane, so a workspace holding several tabs reads as panes of one Tern
+-- tab. A tab with its own split keeps the first pane and says so in the skip
+-- list, because a Tern pane cannot hold a group.
+local function plan_panes(label, tabs, snapshot, skipped)
+	local panes = {}
+	for _, tab in ipairs(tabs) do
+		local own = if type(tab.label) == "string" and tab.label ~= tostring(tab.number) then tab.label else tostring(tab.number or 1)
+		local leaves = panes_of_tab(snapshot, tab.tab_id)
+		if leaves[1] then
+			table.insert(panes, leaves[1])
+			if #leaves > 1 then
+				table.insert(skipped, label .. " - " .. own .. " (first of " .. #leaves .. " panes)")
+			end
+		end
+	end
+	if #panes == 0 then return nil end
+	return { title = label, panes = panes }
+end
+
+-- A tab spec laying the panes out in columns of two (three when there are
+-- many), so a workspace reads as a grid instead of one narrow strip. Splits
+-- carry no ratio: `even` levels the shares once the tree is built.
+local function grid_spec(title, panes)
+	local count = #panes
+	local rows = if count <= 6 then 2 else 3
+	local root
+	for column = math.ceil(count / rows), 1, -1 do
+		local first = (column - 1) * rows + 1
+		local side
+		for row = math.min(column * rows, count), first, -1 do
+			local leaf = { launch = launch_of(panes[row]) }
+			side = if side == nil then leaf else { split = "down", [1] = leaf, [2] = side }
+		end
+		root = if root == nil then side else { split = "right", [1] = side, [2] = root }
+	end
+	root.name = title
+	return root
+end
+
 -- Creates one Tern tab per plan (and its panes) in the current session; returns
 -- how many landed and the titles that could not be built.
 local function build_plans(cx, plans)
 	local tabs_made, panes_made, failed = 0, 0, {}
 	for _, plan in ipairs(plans) do
-		local base = cx.layout:new_tab(if plan.panes[1] then launch_of(plan.panes[1]) else nil)
-		local made_tab = base and cx.session:tab_of(base)
-		if made_tab then cx.layout:name_tab(made_tab, plan.title) end
-		if base then
+		-- A tab whose panes are gone still lands, as a plain shell tab.
+		local spec = if #plan.panes > 0 then grid_spec(plan.title, plan.panes) else { name = plan.title }
+		local tab, err = cx.layout:tab(spec)
+		if tab then
+			cx.layout:even(tab)
 			tabs_made += 1
-			panes_made += 1
-			for index = 2, #plan.panes do
-				local next_pane = cx.layout:split(base, "right", launch_of(plan.panes[index]))
-				if next_pane then
-					base = next_pane
-					panes_made += 1
-				end
-			end
+			panes_made += if #plan.panes > 0 then #plan.panes else 1
 		else
-			table.insert(failed, plan.title)
+			table.insert(failed, plan.title .. (if err then " (" .. err .. ")" else ""))
 		end
 	end
 	return tabs_made, panes_made, failed
 end
 
-local function import_into(cx, name, snapshot, wanted, split, destination)
+local function import_into(cx, name, snapshot, wanted, mode, destination)
 	cx.hosts:switch("local")
 	local sessions_made, tabs_made, panes_made, skipped = 0, 0, 0, {}
 	local groups = {}
@@ -545,6 +585,9 @@ local function import_into(cx, name, snapshot, wanted, split, destination)
 			local tabs = sorted_by_number(matching(snapshot.tabs, "workspace_id", workspace.workspace_id))
 			if #tabs == 0 then
 				table.insert(skipped, label .. " (no tabs)")
+			elseif mode == "panes" then
+				local plan = plan_panes(label, tabs, snapshot, skipped)
+				if plan then table.insert(groups, { label = label, plans = { plan } }) end
 			else
 				table.insert(groups, { label = label, plans = plan_tabs(label, tabs, snapshot) })
 			end
@@ -560,7 +603,7 @@ local function import_into(cx, name, snapshot, wanted, split, destination)
 			for _, plan in ipairs(group.plans) do table.insert(plans, plan) end
 		end
 		table.insert(targets, { name = destination, plans = plans, existing = true })
-	elseif split then
+	elseif mode == "split" then
 		for _, group in ipairs(groups) do
 			table.insert(targets, { name = "Herdr " .. name .. "/" .. group.label, plans = group.plans })
 		end
@@ -607,7 +650,7 @@ local function import_into(cx, name, snapshot, wanted, split, destination)
 	return summary
 end
 
-local function import_session(cx, pane, name, wanted, split, destination)
+local function import_session(cx, pane, name, wanted, mode, destination)
 	importing += 1
 	local revision = importing
 	local what = if wanted then "the picked workspaces from " else "all workspaces from "
@@ -631,7 +674,7 @@ local function import_session(cx, pane, name, wanted, split, destination)
 				draw(fresh, pane, "Herdr returned no session snapshot to import.")
 				return
 			end
-			local drew, failure = pcall(function() return import_into(fresh, name, snapshot, wanted, split, destination) end)
+			local drew, failure = pcall(function() return import_into(fresh, name, snapshot, wanted, mode, destination) end)
 			if not drew then tern.log.warn("Herdr for Tern: import failed", tostring(failure)) end
 			draw(fresh, pane, if drew then failure else "Could not import " .. name .. ": " .. tostring(failure))
 		end)
@@ -882,7 +925,7 @@ tern.on("canvas_action", function(ev, cx)
 			end
 		end
 		step = "sessions"
-		import_session(cx, pane, chosen, wanted, value == "split", target)
+		import_session(cx, pane, chosen, wanted, value, target)
 		return true
 	end
 	return nil
