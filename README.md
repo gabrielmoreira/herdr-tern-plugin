@@ -2,6 +2,8 @@
 
 Your Herdr sessions, inside Tern.
 
+![The Herdr picker in Tern](assets/picker.png)
+
 Two commands in Tern's palette, both found by searching `herdr`:
 
 - **Open Herdr in a Tab**: the session's own Herdr client runs in a Tern tab. Live control of its workspaces, tabs and panes, without leaving Tern.
