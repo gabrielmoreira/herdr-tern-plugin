@@ -1,7 +1,7 @@
 schema = 1
 id = "herdr-tern-plugin"
 name = "Herdr for Tern"
-version = "0.4.2"
+version = "0.4.3"
 description = "Open or import your existing Herdr sessions inside Tern."
 icon = "terminal"
 window = "window.luau"

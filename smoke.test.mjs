@@ -53,6 +53,8 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
     return stdout.trim().startsWith("{") ? JSON.parse(stdout) : stdout;
   };
   const control = (command) => run([tern, "ctl", "--control", String(port), command]);
+  // Buttons shorten long session names; the rows keep them whole.
+  const short = (name) => name.length <= 24 ? name : name.slice(0, 23) + "…";
   const api = (...args) => run([herdr, `--session=${session}`, ...args]);
   // The picker picks a row; the command's own button names what it will do, so
   // the test never clicks an action meant for another session.
@@ -69,7 +71,7 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
     await control(`click ${button.rect[0] + button.rect[2] / 2} ${button.rect[1] + button.rect[3] / 2}`);
   };
   const open = async () => {
-    await act("plugin.herdr-tern-plugin.open", `Open "${session}" in a tab`);
+    await act("plugin.herdr-tern-plugin.open", `Open "${short(session)}" in a tab`);
     return control("state");
   };
 
@@ -157,7 +159,7 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
       expect(row).toBeDefined();
       await click(row);
       const { nodes: acting } = await control("tree .sf-act");
-      const button = acting.find((node) => node.text === `Import "${session}"`);
+      const button = acting.find((node) => node.text === `Import "${short(session)}"`);
       expect(button).toBeDefined();
       await click(button);
       return control("tree .sf-act");
@@ -251,7 +253,7 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
       expect(existing).toBeDefined();
       await click(existing);
       const { nodes: picking } = await control("tree .sf-act");
-      const into = picking.find((node) => node.text === `Into "Herdr ${session}" (2 tabs)`);
+      const into = picking.find((node) => node.text === `Into "${short(`Herdr ${session}`)}" (2 tabs)`);
       expect(into).toBeDefined();
       await click(into);
     }

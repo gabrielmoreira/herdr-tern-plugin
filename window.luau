@@ -223,6 +223,13 @@ local function counted(number, word)
 	return number .. " " .. word .. (if number == 1 then "" else "s")
 end
 
+-- A long session name repeated in a button wraps the actions row into a wall
+-- of text; buttons carry a shortened name while the row keeps it whole.
+local function short(name)
+	if #name <= 24 then return name end
+	return string.sub(name, 1, 23) .. "…"
+end
+
 local function session_detail(session)
 	local base = if session.running then "running" else "starts when opened"
 	if not session.peek then return base end
@@ -282,14 +289,7 @@ local function session_sections()
 		table.insert(sections, session_section(session))
 	end
 	if #sections == 0 then return ui.text({ ui.span("No local sessions found.", "muted") }) end
-	local col = ui.col(sections)
-	-- The key is what the timer's keyed canvas:set path starts from: a bare
-	-- section key does not resolve below the root, and the canvas appends the
-	-- node after the actions row instead of replacing it in place.
-	local props = col.p or {}
-	props.key = "sessions"
-	col.p = props
-	return col
+	return ui.col(sections)
 end
 
 -- The import step: one row per saved workspace, each row its own choice, so
@@ -391,9 +391,9 @@ local function picker_actions()
 			if target then
 				if count > 0 then
 					table.insert(actions, action_button(
-						'Into "' .. target .. '" (' .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
+						'Into "' .. short(target) .. '" (' .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
 					table.insert(actions, action_button(
-						'Tabs as panes into "' .. target .. '" (' .. counted(tabs, "pane") .. ")", "import_run=panes"))
+						'Tabs as panes into "' .. short(target) .. '" (' .. counted(tabs, "pane") .. ")", "import_run=panes"))
 				end
 			elseif count > 0 then
 				table.insert(actions, action_button(
@@ -416,9 +416,9 @@ local function picker_actions()
 	end
 	local session = chosen and sessions[chosen]
 	if mode == "open" then
-		if session then table.insert(actions, action_button('Open "' .. chosen .. '" in a tab', "open=" .. chosen, "accent")) end
+		if session then table.insert(actions, action_button('Open "' .. short(chosen) .. '" in a tab', "open=" .. chosen, "accent")) end
 	elseif session and session.running then
-		table.insert(actions, action_button('Import "' .. chosen .. '"', "import=" .. chosen, "accent"))
+		table.insert(actions, action_button('Import "' .. short(chosen) .. '"', "import=" .. chosen, "accent"))
 	end
 	table.insert(actions, action_button("Refresh sessions", "refresh"))
 	return ui.row(actions)
@@ -788,15 +788,11 @@ local function refresh(cx, pane)
 						-- Only a picker that still exists gets the count: a
 						-- closed picker must not be re-opened by a landing read.
 						local pane = own_picker(cx)
-						if pane then
-							-- The path starts at the keyed sections column: a
-							-- bare section key does not resolve and the canvas
-							-- appends the section after the actions row.
-							local ok = pcall(cx.canvas.set, cx.canvas, pane, { set = { ["sessions." .. session.name] = session_section(session) } })
-							-- A stale handle falls back to a full draw; a picker
-							-- that closed since the check is left alone.
-							if not ok and own_picker(cx) then draw_picker(cx, pane) end
-						end
+						-- A full redraw, not a keyed canvas:set: a keyed patch
+						-- updates the canvas state but the window does not
+						-- repaint it, so the count only showed up after the user
+						-- collapsed or expanded a section.
+						if pane then draw_picker(cx, pane) end
 					end
 				end))
 			end
