@@ -141,6 +141,11 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
     const enterStep = async () => {
       await control("plugins run plugin.herdr-tern-plugin.import");
       await control('plugins expect "Choose a session:"');
+      // The peek counts land on staggered timers, not in the process hook, so
+      // wait for the section to carry them (a timer API that does not exist
+      // would strand the counts and fail here).
+      await waitFor(() => control("tree .sf-act"),
+        (tree) => (tree.nodes ?? []).some((node) => (node.text ?? "").startsWith(session) && node.text.includes("workspace(s)")));
       const { nodes } = await control("tree .sf-act");
       const row = nodes.find((node) => node.text.startsWith(session));
       expect(row).toBeDefined();

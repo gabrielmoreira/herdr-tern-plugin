@@ -675,7 +675,7 @@ local function refresh(cx, pane)
 			-- a plugin's hook past 50 ms, so each file is read in its own
 			-- staggered timer callback and the counts land as they are read.
 			for offset, session in ipairs(listed) do
-				tern.after(offset * 40, function(cx)
+				tern.timer(offset * 40, function(cx)
 					if revision ~= request then return end
 					local peek = saved_workspaces(session)
 					if peek then
