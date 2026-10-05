@@ -143,11 +143,17 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
       await control('plugins expect "Choose a session:"');
       // The peek counts land on staggered timers, not in the process hook, so
       // wait for the section to carry them (a timer API that does not exist
-      // would strand the counts and fail here).
+      // would strand the counts and fail here). The pending state reads
+      // "Reading saved workspaces…", so match the landed counts.
       await waitFor(() => control("tree .sf-act"),
-        (tree) => (tree.nodes ?? []).some((node) => (node.text ?? "").startsWith(session) && node.text.includes("workspace(s)")));
+        (tree) => (tree.nodes ?? []).some((node) => (node.text ?? "").startsWith(session) && /\d+ workspaces? · \d+ tabs?/.test(node.text)));
       const { nodes } = await control("tree .sf-act");
-      const row = nodes.find((node) => node.text.startsWith(session));
+      const rows = nodes.filter((node) => (node.text ?? "").startsWith(session));
+      // Exactly one row: a keyed canvas:set whose path misses the sections
+      // column appends a second section below the buttons instead of
+      // replacing the row in place.
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
       expect(row).toBeDefined();
       await click(row);
       const { nodes: acting } = await control("tree .sf-act");
@@ -166,11 +172,11 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
       // The second "Plugin smoke" workspace is its own choice: same label,
       // different row, and unticking it must not untick the first.
       const { nodes: between } = await control("tree .sf-act");
-      const deltaRow = between.find((node) => node.text === "Plugin smoke1 tab(s)");
+      const deltaRow = between.find((node) => node.text === "Plugin smoke1 tab");
       expect(deltaRow).toBeDefined();
       await click(deltaRow);
       const { nodes: acting } = await control("tree .sf-act");
-      const one = acting.find((node) => node.text === "Import 1 workspace in one session (2 tabs)");
+      const one = acting.find((node) => node.text === "One session (2 tabs)");
       expect(one).toBeDefined();
       await click(one);
     }
@@ -195,7 +201,7 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
       const back = await control("tree .sf-act");
       expect((back.nodes ?? []).some((node) => node.text.startsWith(session))).toBe(true);
       const { nodes } = await enterStep();
-      const splitButton = nodes.find((node) => node.text === "Import 3 workspaces as 3 sessions (4 tabs)");
+      const splitButton = nodes.find((node) => node.text === "3 sessions, one per workspace (4 tabs)");
       expect(splitButton).toBeDefined();
       await click(splitButton);
     }
@@ -237,15 +243,15 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
       const { nodes } = await enterStep();
       const suggested = nodes.find((node) => node.text.startsWith("New session") && node.text.includes("(2)"));
       expect(suggested).toBeDefined();
-      await click(nodes.find((node) => node.text === "Plugin gamma1 tab(s)"));
+      await click(nodes.find((node) => node.text === "Plugin gamma1 tab"));
       const { nodes: between } = await control("tree .sf-act");
-      await click(between.find((node) => node.text === "Plugin smoke1 tab(s)"));
+      await click(between.find((node) => node.text === "Plugin smoke1 tab"));
       const { nodes: acting } = await control("tree .sf-act");
       const existing = acting.find((node) => node.text.startsWith(`Herdr ${session}`) && !node.text.includes("/"));
       expect(existing).toBeDefined();
       await click(existing);
       const { nodes: picking } = await control("tree .sf-act");
-      const into = picking.find((node) => node.text === `Import 1 workspace into "Herdr ${session}" (2 tabs)`);
+      const into = picking.find((node) => node.text === `Into "Herdr ${session}" (2 tabs)`);
       expect(into).toBeDefined();
       await click(into);
     }
@@ -257,11 +263,11 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
     // Panes mode: the same workspace, its tabs as panes of one Tern tab.
     {
       const { nodes } = await enterStep();
-      await click(nodes.find((node) => node.text === "Plugin gamma1 tab(s)"));
+      await click(nodes.find((node) => node.text === "Plugin gamma1 tab"));
       const { nodes: between } = await control("tree .sf-act");
-      await click(between.find((node) => node.text === "Plugin smoke1 tab(s)"));
+      await click(between.find((node) => node.text === "Plugin smoke1 tab"));
       const { nodes: acting } = await control("tree .sf-act");
-      const panes = acting.find((node) => node.text === "Import 1 workspace as panes (2 panes)");
+      const panes = acting.find((node) => node.text === "Tabs as panes, one tab per workspace (2 panes)");
       expect(panes).toBeDefined();
       await click(panes);
     }

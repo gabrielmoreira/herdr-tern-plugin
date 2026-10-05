@@ -200,12 +200,17 @@ local function saved_workspaces(session)
 	return out
 end
 
+-- Counts with their plural, so labels read as prose.
+local function counted(number, word)
+	return number .. " " .. word .. (if number == 1 then "" else "s")
+end
+
 local function session_detail(session)
 	local base = if session.running then "running" else "starts when opened"
 	if not session.peek then return base end
 	local tabs = 0
 	for _, workspace in ipairs(session.peek) do tabs += workspace.tabs end
-	return base .. " · " .. #session.peek .. " workspace(s) · " .. tabs .. " tab(s)"
+	return base .. " · " .. counted(#session.peek, "workspace") .. " · " .. counted(tabs, "tab")
 end
 
 -- One collapsible section per session: collapsed it carries the counts,
@@ -222,19 +227,33 @@ local function session_section(session)
 	for _, workspace in ipairs(session.peek or {}) do
 		table.insert(rows, {
 			label = { ui.span(workspace.label) },
-			detail = workspace.tabs .. " tab(s)",
-			icon = "terminal",
+			detail = counted(workspace.tabs, "tab"),
+			icon = "folder",
 		})
 	end
-	local inside = if #rows > 0
-		then ui.list(rows)
-		else ui.text({ ui.span("No saved workspaces to show.", "muted") })
-	local node = ui.section(head, { inside })
+	local body = {
+		ui.row({ ui.badge(if session.running then "running" else "stopped", if session.running then "accent" else "muted") }),
+	}
+	if #rows > 0 then
+		local list = ui.list(rows)
+		local list_props = list.p or {}
+		list_props.role = "herdr-tern-plugin.rows"
+		list.p = list_props
+		table.insert(body, list)
+	else
+		-- While the read is in flight the section says so: "No saved
+		-- workspaces to show." reads as a fact about a session still loading.
+		local empty = if session.peek_tried then "No saved workspaces to show." else "Reading saved workspaces…"
+		table.insert(body, ui.text({ ui.span(empty, "muted") }))
+	end
+	local node = ui.section(head, body)
 	local props = node.p or {}
 	props.key = session.name
+	props.role = "herdr-tern-plugin.session"
 	props.collapsible = true
 	props.collapsed = session.name ~= chosen
 	props.actions = { click = "pick=" .. session.name }
+	if session.name == chosen then props.tone = "accent" end
 	node.p = props
 	return node
 end
@@ -245,7 +264,14 @@ local function session_sections()
 		table.insert(sections, session_section(session))
 	end
 	if #sections == 0 then return ui.text({ ui.span("No local sessions found.", "muted") }) end
-	return ui.col(sections)
+	local col = ui.col(sections)
+	-- The key is what the timer's keyed canvas:set path starts from: a bare
+	-- section key does not resolve below the root, and the canvas appends the
+	-- node after the actions row instead of replacing it in place.
+	local props = col.p or {}
+	props.key = "sessions"
+	col.p = props
+	return col
 end
 
 -- The import step: one row per saved workspace, each row its own choice, so
@@ -254,13 +280,18 @@ local function workspace_list()
 	local items = {}
 	for _, workspace in ipairs(workspaces) do
 		table.insert(items, {
-			label = { ui.span(workspace.label, if workspace.selected then "strong" else "muted") },
-			detail = workspace.tabs .. " tab(s)",
-			icon = "terminal",
-			tone = if workspace.selected then "accent" else "muted",
+			-- Selection reads from the row's mark alone: tinting every picked
+			-- row accent turns a fully picked list into a wall of blue.
+			label = { ui.span(workspace.label, if workspace.selected then nil else "muted") },
+			detail = counted(workspace.tabs, "tab"),
+			icon = "folder",
+			tone = if workspace.selected then nil else "muted",
 		})
 	end
 	local node = ui.list(items)
+	local node_props = node.p or {}
+	node_props.role = "herdr-tern-plugin.rows"
+	node.p = node_props
 	for index, child in ipairs(node.c or {}) do
 		local item = child.p or {}
 		item.key = workspaces[index].key
@@ -310,6 +341,7 @@ local function destination_section(cx)
 	local props = node.p or {}
 	props.key = "destination"
 	props.max = { lines = 6 }
+	props.role = "herdr-tern-plugin.rows"
 	node.p = props
 	local choice = if target then 'into "' .. target .. '"' else 'new session "' .. suggested .. '"'
 	local head = { ui.span("Destination", "strong"), ui.span("  " .. choice, "muted") }
@@ -333,8 +365,9 @@ local function picked_counts()
 	return workspaces_picked, tabs_picked
 end
 
--- Buttons state the consequence, counts with their plural, so the two import
--- choices read as what lands in Tern instead of as mechanism.
+-- Buttons state the consequence, counts with their plural, so the import
+-- choices read as what lands in Tern instead of as mechanism. The panes
+-- choice says its mapping: one tab per workspace, its Herdr tabs as panes.
 local function counted(number, word)
 	return number .. " " .. word .. (if number == 1 then "" else "s")
 end
@@ -347,25 +380,25 @@ local function picker_actions()
 			if target then
 				if count > 0 then
 					table.insert(actions, action_button(
-						"Import " .. counted(count, "workspace") .. ' into "' .. target .. '" (' .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
+						'Into "' .. target .. '" (' .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
 					table.insert(actions, action_button(
-						"Import " .. counted(count, "workspace") .. ' into "' .. target .. '" as panes (' .. counted(tabs, "pane") .. ")", "import_run=panes"))
+						'Tabs as panes into "' .. target .. '" (' .. counted(tabs, "pane") .. ")", "import_run=panes"))
 				end
 			elseif count > 0 then
 				table.insert(actions, action_button(
-					"Import " .. counted(count, "workspace") .. " in one session (" .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
+					"One session (" .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
 				table.insert(actions, action_button(
-					"Import " .. counted(count, "workspace") .. " as " .. counted(count, "session") .. " (" .. counted(tabs, "tab") .. ")", "import_run=split"))
+					counted(count, "session") .. ", one per workspace (" .. counted(tabs, "tab") .. ")", "import_run=split"))
 				table.insert(actions, action_button(
-					"Import " .. counted(count, "workspace") .. " as panes (" .. counted(tabs, "pane") .. ")", "import_run=panes"))
+					"Tabs as panes, one tab per workspace (" .. counted(tabs, "pane") .. ")", "import_run=panes"))
 			end
 		elseif target then
-			table.insert(actions, action_button('Import all workspaces into "' .. target .. '"', "import_run=one", "accent"))
-			table.insert(actions, action_button('Import all workspaces into "' .. target .. '" as panes', "import_run=panes"))
+			table.insert(actions, action_button('All workspaces into "' .. target .. '"', "import_run=one", "accent"))
+			table.insert(actions, action_button('All workspaces as tabs of panes into "' .. target .. '"', "import_run=panes"))
 		else
-			table.insert(actions, action_button("Import all workspaces in one session", "import_run=one", "accent"))
-			table.insert(actions, action_button("Import all workspaces as sessions", "import_run=split"))
-			table.insert(actions, action_button("Import all workspaces as panes", "import_run=panes"))
+			table.insert(actions, action_button("All workspaces in one session", "import_run=one", "accent"))
+			table.insert(actions, action_button("All workspaces as one session per workspace", "import_run=split"))
+			table.insert(actions, action_button("All workspaces as tabs of panes", "import_run=panes"))
 		end
 		table.insert(actions, action_button("Back", "back"))
 		return ui.row(actions)
@@ -404,6 +437,7 @@ local function draw_picker(cx, pane)
 				table.insert(body, ui.text({ ui.span("Scroll the list for " .. counted(hidden, "more workspace") .. ".", "muted") }))
 			end
 		end
+		table.insert(body, ui.rule(""))
 		table.insert(body, destination_section(cx))
 	else
 		table.insert(body, session_sections())
@@ -737,15 +771,17 @@ local function refresh(cx, pane)
 				table.insert(pending, tern.timer(offset * 40, function(cx)
 					if revision ~= request then return end
 					local peek = saved_workspaces(session)
+					session.peek_tried = true
 					if peek then
 						session.peek = peek
 						-- Only a picker that still exists gets the count: a
 						-- closed picker must not be re-opened by a landing read.
 						local pane = own_picker(cx)
 						if pane then
-							-- A keyed set replaces just this session's section,
-							-- so no other row is rebuilt for one count.
-							local ok = pcall(cx.canvas.set, cx.canvas, pane, { set = { [session.name] = session_section(session) } })
+							-- The path starts at the keyed sections column: a
+							-- bare section key does not resolve and the canvas
+							-- appends the section after the actions row.
+							local ok = pcall(cx.canvas.set, cx.canvas, pane, { set = { ["sessions." .. session.name] = session_section(session) } })
 							-- A stale handle falls back to a full draw; a picker
 							-- that closed since the check is left alone.
 							if not ok and own_picker(cx) then draw_picker(cx, pane) end

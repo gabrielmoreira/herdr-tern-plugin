@@ -1,6 +1,6 @@
 /* Tern's base sheet resets a bare button to plain text, so the picker's buttons
    carry a role of ours and take their look from here. A plugin sheet applies to
-   the whole window, so every selector is scoped to that role. */
+   the whole window, so every selector is scoped to a role. */
 
 button[data-role='herdr-tern-plugin.action'] {
 	font: inherit;
@@ -27,4 +27,21 @@ button[data-role='herdr-tern-plugin.action'][data-tone='accent'] {
 
 button[data-role='herdr-tern-plugin.action'][data-tone='accent']:hover {
 	background: var(--accent);
+}
+
+/* The picker's rows: rounded, hover says clickable. Selection itself stays
+   Tern's own (the row's mark and data-tone), so a fully picked list does not
+   turn into a wall of tint. */
+.sf-list[data-role='herdr-tern-plugin.rows'] .sf-item {
+	border-radius: var(--r-ctl);
+	padding: 1px 6px;
+}
+
+.sf-list[data-role='herdr-tern-plugin.rows'] .sf-item:hover {
+	background: var(--l1);
+}
+
+/* The session sections: the status chip above the rows gets room to breathe. */
+.sf-section[data-role='herdr-tern-plugin.session'] .sf-badge {
+	margin: 2px 0 6px;
 }
