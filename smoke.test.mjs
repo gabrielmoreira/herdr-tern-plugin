@@ -53,8 +53,12 @@ test("opens, reuses, reattaches, and imports a real Herdr session", async () => 
     return stdout.trim().startsWith("{") ? JSON.parse(stdout) : stdout;
   };
   const control = (command) => run([tern, "ctl", "--control", String(port), command]);
-  // Buttons shorten long session names; the rows keep them whole.
-  const short = (name) => name.length <= 24 ? name : name.slice(0, 23) + "…";
+  // Buttons shorten long session names on a code-point boundary; the rows keep
+  // them whole. Mirrors the plugin's short().
+  const short = (name) => {
+    const runes = [...name];
+    return runes.length <= 24 ? name : runes.slice(0, 23).join("") + "…";
+  };
   const api = (...args) => run([herdr, `--session=${session}`, ...args]);
   // The picker picks a row; the command's own button names what it will do, so
   // the test never clicks an action meant for another session.

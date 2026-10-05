@@ -224,30 +224,50 @@ local function counted(number, word)
 end
 
 -- A long session name repeated in a button wraps the actions row into a wall
--- of text; buttons carry a shortened name while the row keeps it whole.
+-- of text; buttons carry a shortened name while the row keeps it whole. The
+-- cut lands on a code point, so a multibyte name cannot lose half a sequence
+-- to the ellipsis.
 local function short(name)
-	if #name <= 24 then return name end
-	return string.sub(name, 1, 23) .. "…"
+	local runes = 0
+	for index = 1, #name do
+		local byte = string.byte(name, index)
+		if byte < 128 or byte >= 192 then runes += 1 end
+	end
+	if runes <= 24 then return name end
+	runes, cut = 0, 0
+	for index = 1, #name do
+		local byte = string.byte(name, index)
+		if byte < 128 or byte >= 192 then
+			runes += 1
+			if runes > 23 then break end
+		end
+		cut = index
+	end
+	return string.sub(name, 1, cut) .. "…"
 end
 
-local function session_detail(session)
-	local base = if session.running then "running" else "starts when opened"
-	if not session.peek then return base end
-	local tabs = 0
-	for _, workspace in ipairs(session.peek) do tabs += workspace.tabs end
-	return base .. " · " .. counted(#session.peek, "workspace") .. " · " .. counted(tabs, "tab")
+-- The expanded section carries its status in the badge below the head, so the
+-- head leaves it out there instead of saying it twice.
+local function session_detail(session, with_status)
+	local parts = {}
+	if with_status then table.insert(parts, if session.running then "running" else "starts when opened") end
+	if session.peek then
+		local tabs = 0
+		for _, workspace in ipairs(session.peek) do tabs += workspace.tabs end
+		table.insert(parts, counted(#session.peek, "workspace"))
+		table.insert(parts, counted(tabs, "tab"))
+	end
+	return table.concat(parts, " · ")
 end
 
 -- One collapsible section per session: collapsed it carries the counts,
 -- expanded it shows the workspaces the session holds. The key keeps a
 -- section's identity, so the user's expansion survives refreshes, and
--- clicking a section picks that session for the action under the list. A
--- landing count replaces just this section through a keyed canvas:set.
+-- clicking a section picks that session for the action under the list.
 local function session_section(session)
-	local head = {
-		ui.span(session.name, "strong"),
-		ui.span("  " .. session_detail(session), "muted"),
-	}
+	local head = { ui.span(session.name, "strong") }
+	local detail = session_detail(session, session.name ~= chosen)
+	if detail ~= "" then table.insert(head, ui.span("  " .. detail, "muted")) end
 	local rows = {}
 	for _, workspace in ipairs(session.peek or {}) do
 		table.insert(rows, {
