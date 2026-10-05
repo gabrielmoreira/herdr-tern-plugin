@@ -1,0 +1,30 @@
+/* Tern's base sheet resets a bare button to plain text, so the picker's buttons
+   carry a role of ours and take their look from here. A plugin sheet applies to
+   the whole window, so every selector is scoped to that role. */
+
+button[data-role='herdr-tern-plugin.action'] {
+	font: inherit;
+	font-family: var(--sans);
+	font-size: 12px;
+	line-height: 1.4;
+	padding: 4px 12px;
+	border: 1px solid var(--l3);
+	border-radius: var(--r-ctl);
+	background: var(--raise);
+	color: var(--t1);
+}
+
+button[data-role='herdr-tern-plugin.action']:hover {
+	background: var(--l1);
+	border-color: var(--l4);
+}
+
+button[data-role='herdr-tern-plugin.action'][data-tone='accent'] {
+	background: var(--accent-fill);
+	border-color: transparent;
+	color: #fff;
+}
+
+button[data-role='herdr-tern-plugin.action'][data-tone='accent']:hover {
+	background: var(--accent);
+}

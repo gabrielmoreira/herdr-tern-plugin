@@ -1,17 +1,32 @@
 local ui = tern.ui
 local title = "Herdr for Tern"
-local opened, sessions = {}, {}
+local opened, sessions, listed = {}, {}, {}
+local chosen
+local step = "sessions"
+local workspaces
+-- Where an import lands: nil is a session Tern creates, else the name of a Tern
+-- session that already exists. `destinations` is that session list, read when
+-- the import step opens.
+local target
+local destinations
+-- Defined further down; the destination row needs it before it is assigned.
+local free_session_name
 local request = 0
+local importing = 0
 local herdr
 local searched = {}
+
+local about = "Pick a local Herdr session: open its client in a Tern tab, or import picked workspaces into Tern as one session or one per workspace. Herdr keeps running."
 
 local function valid_name(name)
 	return type(name) == "string" and #name > 0 and #name <= 64
 		and string.match(name, "^[%w_.-]+$") ~= nil
 end
 
-local function button(label, action)
-	return ui.el("button", { text = label, actions = { click = action } })
+-- Tern resets a bare button to plain text, so the picker's buttons carry a role
+-- of ours that window.css turns into a real control.
+local function action_button(label, act, tone)
+	return ui.el("button", { text = label, actions = { click = act }, role = "herdr-tern-plugin.action", tone = tone })
 end
 
 local function version_key(name)
@@ -98,18 +113,14 @@ local function attach_command(name)
 	return bin .. " --session=" .. name
 end
 
--- Draw through canvas:set, which the daemon authorises from the stored creator
--- id. Do not gate on canvas:get: this window's replica of a canvas can still be
--- empty when a process callback runs, and treating that as "not ours" dropped
--- every update, leaving the picker on its first line with nothing logged.
-local function draw(cx, pane, message, rows)
-	local children = { ui.text(message) }
-	for _, row in rows or {} do table.insert(children, row) end
-	table.insert(children, button("Refresh sessions", "refresh"))
-	local ok, err = pcall(cx.canvas.set, cx.canvas, pane, { view = ui.card(title, children) })
-	if not ok then tern.log.warn("Herdr for Tern: could not draw the session picker", tostring(err)) end
-	return ok
-end
+-- Both palette commands open the same picker; the command's own action comes
+-- first. Open attaches the live Herdr client in a Tern tab; Import opens a
+-- second step that picks the workspaces and how they land in Tern.
+local modes = {
+	open = { hint = "Pick a session to show its Herdr client in a Tern tab." },
+	import = { hint = "Pick a session to copy into Tern. The next step picks the workspaces and whether they land as one session or one per workspace. Herdr keeps running." },
+}
+local mode = "open"
 
 local function own_picker(cx)
 	for _, canvas in cx.canvas:list() do
@@ -118,15 +129,518 @@ local function own_picker(cx)
 	return nil
 end
 
+-- Draw through canvas:set, which the daemon authorises from the stored creator
+-- id. Do not gate on canvas:get: this window's replica of a canvas can still be
+-- empty when a process callback runs, and treating that as "not ours" dropped
+-- every update, leaving the picker on its first line with nothing logged.
+-- A plugin reload (a linked plugin, or Tern reloading after a file change)
+-- invalidates the canvas handles an earlier VM held, and its in-flight process
+-- callbacks land in the new VM holding a stale pane, so resolve the picker's
+-- canvas in the current VM, retry with it, and re-open the canvas when even the
+-- resolved handle is rejected, which re-claims it in this VM.
+local function draw(cx, pane, message, children)
+	local body = { ui.text({ ui.span(message, "muted") }) }
+	local hint = modes[mode].hint
+	if hint then table.insert(body, ui.text({ ui.span(hint, "muted") })) end
+	for _, child in ipairs(children or {}) do table.insert(body, child) end
+	-- canvas:set takes the document, canvas:open takes the bare node; handing
+	-- the document to open draws "canvas node needs string k" into the log.
+	local card = ui.card(title, body)
+	local document = { view = card }
+	local target = own_picker(cx) or pane
+	local ok, err = pcall(cx.canvas.set, cx.canvas, target, document)
+	if not ok then
+		local live = own_picker(cx)
+		if live and live ~= target then ok, err = pcall(cx.canvas.set, cx.canvas, live, document) end
+	end
+	if not ok then
+		local reopened, opened = pcall(function()
+			return cx.canvas:open({ title = title, view = card, how = "tab", about = about })
+		end)
+		if reopened and opened ~= nil and opened ~= false then
+			ok = true
+		else
+			ok, err = false, tostring(opened)
+		end
+	end
+	if not ok then tern.log.warn("Herdr for Tern: could not draw the session picker", tostring(err)) end
+	return ok
+end
+
+-- Herdr saves every session's live structure next to its socket, and the
+-- session list hands that directory over, so the picker reads what a session
+-- holds without starting another process: each process already costs a console
+-- window on Windows. A missing or unreadable state only drops the peek.
+local function saved_workspaces(session)
+	local dir = type(session.session_dir) == "string" and session.session_dir or nil
+	if not dir then return nil end
+	local ok, text = pcall(tern.fs.read, dir .. "/session.json", 524288)
+	if not ok then return nil end
+	local decoded, state = pcall(tern.json.decode, text)
+	if not decoded or type(state) ~= "table" or type(state.workspaces) ~= "table" then return nil end
+	local out = {}
+	for index, workspace in ipairs(state.workspaces) do
+		local label = (type(workspace.custom_name) == "string" and #workspace.custom_name > 0 and workspace.custom_name)
+			or (type(workspace.identity_cwd) == "string" and string.match(workspace.identity_cwd, "([^/\\]+)[/\\]*$"))
+			or ("workspace " .. tostring(index))
+		table.insert(out, {
+			-- Herdr allows the same workspace label twice, and Tern rejects
+			-- duplicate child keys, so rows carry the workspace's id. The saved
+			-- state names it `id`; the import snapshot names it `workspace_id`,
+			-- and both hold the same value, which is what the wanted set joins on.
+			key = tostring(workspace.id or index),
+			label = label,
+			tabs = type(workspace.tabs) == "table" and #workspace.tabs or 0,
+		})
+	end
+	return out
+end
+
+local function session_detail(session)
+	local base = if session.running then "running" else "starts when opened"
+	if not session.peek then return base end
+	local tabs = 0
+	for _, workspace in ipairs(session.peek) do tabs += workspace.tabs end
+	return base .. " · " .. #session.peek .. " workspace(s) · " .. tabs .. " tab(s)"
+end
+
+-- One collapsible section per session: collapsed it carries the counts,
+-- expanded it shows the workspaces the session holds. The key keeps a
+-- section's identity, so the user's expansion survives refreshes, and
+-- clicking a section picks that session for the action under the list.
+local function session_sections()
+	local sections = {}
+	for _, session in ipairs(listed) do
+		local head = {
+			ui.span(session.name, "strong"),
+			ui.span("  " .. session_detail(session), "muted"),
+		}
+		local rows = {}
+		for _, workspace in ipairs(session.peek or {}) do
+			table.insert(rows, {
+				label = { ui.span(workspace.label) },
+				detail = workspace.tabs .. " tab(s)",
+				icon = "terminal",
+			})
+		end
+		local inside = if #rows > 0
+			then ui.list(rows)
+			else ui.text({ ui.span("No saved workspaces to show.", "muted") })
+		local node = ui.section(head, { inside })
+		local props = node.p or {}
+		props.key = session.name
+		props.collapsible = true
+		props.collapsed = session.name ~= chosen
+		props.actions = { click = "pick=" .. session.name }
+		node.p = props
+		table.insert(sections, node)
+	end
+	if #sections == 0 then return ui.text({ ui.span("No local sessions found.", "muted") }) end
+	return ui.col(sections)
+end
+
+-- The import step: one row per saved workspace, each row its own choice, so
+-- what lands in Tern is decided before anything runs.
+local function workspace_list()
+	local items = {}
+	for _, workspace in ipairs(workspaces) do
+		table.insert(items, {
+			label = { ui.span(workspace.label, if workspace.selected then "strong" else "muted") },
+			detail = workspace.tabs .. " tab(s)",
+			icon = "terminal",
+			tone = if workspace.selected then "accent" else "muted",
+		})
+	end
+	local node = ui.list(items)
+	for index, child in ipairs(node.c or {}) do
+		local item = child.p or {}
+		item.key = workspaces[index].key
+		item.actions = { click = "toggle=" .. workspaces[index].key }
+		if workspaces[index].selected then item.mark = "pick" end
+		child.p = item
+	end
+	local props = node.p or {}
+	props.key = "workspaces"
+	props.max = { lines = 10 }
+	props.empty = { ui.span("No saved workspaces to pick from.", "muted") }
+	node.p = props
+	return node
+end
+
+-- Where the picked workspaces land. A session Tern creates is named after the
+-- Herdr session, and the row spells out the name it would really take, so a
+-- taken name shows the number it would get instead of pretending otherwise. Any
+-- existing session can be the destination instead, which is how an import joins
+-- the session it was mirrored from before.
+local function destination_section(cx)
+	local suggested = free_session_name(cx, "Herdr " .. chosen)
+	local items = {
+		{
+			label = { ui.span("New session ", "muted"), ui.span(suggested, "strong") },
+			detail = "creates it",
+			tone = if target == nil then "accent" else "muted",
+		},
+	}
+	for _, session in ipairs(destinations or {}) do
+		table.insert(items, {
+			label = { ui.span(session.name, "strong") },
+			detail = if session.current then "current session" else "existing session",
+			icon = "terminal",
+			tone = if target == session.name then "accent" else "muted",
+		})
+	end
+	local node = ui.list(items)
+	for index, child in ipairs(node.c or {}) do
+		local item = child.p or {}
+		local session = (destinations or {})[index - 1]
+		item.key = if session then "dest-" .. tostring(session.id) else "dest-new"
+		item.actions = { click = if session then "dest=" .. session.name else "dest_new" }
+		if (session and target == session.name) or (not session and target == nil) then item.mark = "pick" end
+		child.p = item
+	end
+	local props = node.p or {}
+	props.key = "destination"
+	props.max = { lines = 6 }
+	node.p = props
+	local choice = if target then 'into "' .. target .. '"' else 'new session "' .. suggested .. '"'
+	local head = { ui.span("Destination", "strong"), ui.span("  " .. choice, "muted") }
+	local section = ui.section(head, { node })
+	local section_props = section.p or {}
+	section_props.key = "destination-section"
+	section_props.collapsible = true
+	section_props.collapsed = false
+	section.p = section_props
+	return section
+end
+
+local function picked_counts()
+	local workspaces_picked, tabs_picked = 0, 0
+	for _, workspace in ipairs(workspaces or {}) do
+		if workspace.selected then
+			workspaces_picked += 1
+			tabs_picked += workspace.tabs
+		end
+	end
+	return workspaces_picked, tabs_picked
+end
+
+-- Buttons state the consequence, counts with their plural, so the two import
+-- choices read as what lands in Tern instead of as mechanism.
+local function counted(number, word)
+	return number .. " " .. word .. (if number == 1 then "" else "s")
+end
+
+local function picker_actions()
+	local actions = {}
+	if step == "workspaces" then
+		if workspaces then
+			local count, tabs = picked_counts()
+			if target then
+				if count > 0 then
+					table.insert(actions, action_button(
+						"Import " .. counted(count, "workspace") .. ' into "' .. target .. '" (' .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
+				end
+			elseif count > 0 then
+				table.insert(actions, action_button(
+					"Import " .. counted(count, "workspace") .. " in one session (" .. counted(tabs, "tab") .. ")", "import_run=one", "accent"))
+				table.insert(actions, action_button(
+					"Import " .. counted(count, "workspace") .. " as " .. counted(count, "session") .. " (" .. counted(tabs, "tab") .. ")", "import_run=split"))
+			end
+		elseif target then
+			table.insert(actions, action_button('Import all workspaces into "' .. target .. '"', "import_run=one", "accent"))
+		else
+			table.insert(actions, action_button("Import all workspaces in one session", "import_run=one", "accent"))
+			table.insert(actions, action_button("Import all workspaces as sessions", "import_run=split"))
+		end
+		table.insert(actions, action_button("Back", "back"))
+		return ui.row(actions)
+	end
+	local session = chosen and sessions[chosen]
+	if mode == "open" then
+		if session then table.insert(actions, action_button('Open "' .. chosen .. '" in a tab', "open=" .. chosen, "accent")) end
+	elseif session and session.running then
+		table.insert(actions, action_button('Import "' .. chosen .. '"', "import=" .. chosen, "accent"))
+	end
+	table.insert(actions, action_button("Refresh sessions", "refresh"))
+	return ui.row(actions)
+end
+
+local function picker_message()
+	if step == "workspaces" then
+		if workspaces then
+			return 'Import "' .. chosen .. '": pick the workspaces, then where they land.'
+		end
+		return 'Import "' .. chosen .. '": the saved workspaces could not be read, so the import brings them all.'
+	end
+	if mode == "import" and chosen and sessions[chosen] and not sessions[chosen].running then
+		return "That session is not running. Start it in Herdr first."
+	end
+	return "Choose a session:"
+end
+
+local function draw_picker(cx, pane)
+	local body = {}
+	if step == "workspaces" then
+		if workspaces then
+			table.insert(body, workspace_list())
+			-- The list caps its height, so count what is below the fold.
+			local hidden = #workspaces - 10
+			if hidden > 0 then
+				table.insert(body, ui.text({ ui.span("Scroll the list for " .. counted(hidden, "more workspace") .. ".", "muted") }))
+			end
+		end
+		table.insert(body, destination_section(cx))
+	else
+		table.insert(body, session_sections())
+	end
+	table.insert(body, picker_actions())
+	draw(cx, pane, picker_message(), body)
+end
+
 local function program_name(program)
 	return string.lower(string.match(program, "([^/\\]+)$") or program)
+end
+
+-- Import reads a session snapshot and mirrors the picked workspaces as Tern
+-- sessions, tabs and panes running the same programs in the same directories.
+-- The Herdr session keeps running: the mirror is a copy, not a move.
+
+local function launch_of(pane)
+	local cwd = if type(pane.cwd) == "string" and #pane.cwd > 0 then pane.cwd else nil
+	local command = if type(pane.agent) == "string" and #pane.agent > 0 then pane.agent else nil
+	return { cwd = cwd, command = command }
+end
+
+local function matching(items, key, value)
+	local out = {}
+	for _, item in ipairs(items or {}) do
+		if type(item) == "table" and item[key] == value then table.insert(out, item) end
+	end
+	return out
+end
+
+local function in_number_order(items)
+	table.sort(items, function(a, b) return (a.number or 0) < (b.number or 0) end)
+	return items
+end
+
+local function copy_of(items)
+	local out = {}
+	for _, item in ipairs(items or {}) do table.insert(out, item) end
+	return out
+end
+
+-- A tab's panes ordered the way its split tree reads: top to bottom, then left
+-- to right. Splits are rebuilt left to right, so this keeps the mirror's shape
+-- close to the original for the common row and column layouts.
+local function panes_of_tab(snapshot, tab_id)
+	local rects = {}
+	for _, layout in ipairs(snapshot.layouts or {}) do
+		if layout.tab_id == tab_id then
+			for _, leaf in ipairs(layout.panes or {}) do rects[leaf.pane_id] = leaf.rect or {} end
+		end
+	end
+	local panes = matching(snapshot.panes, "tab_id", tab_id)
+	table.sort(panes, function(a, b)
+		local ra, rb = rects[a.pane_id] or {}, rects[b.pane_id] or {}
+		if (ra.y or 0) ~= (rb.y or 0) then return (ra.y or 0) < (rb.y or 0) end
+		if (ra.x or 0) ~= (rb.x or 0) then return (ra.x or 0) < (rb.x or 0) end
+		return tostring(a.pane_id) < tostring(b.pane_id)
+	end)
+	return panes
+end
+
+local function first_leaf(tree)
+	while type(tree) == "table" and not tree.pane do tree = tree[1] end
+	return type(tree) == "table" and tree.pane or nil
+end
+
+-- The pane a fresh session starts with, looked up through its own tab so a
+-- close can never reach a pane of another session.
+local function initial_pane(cx, session_id)
+	local ok, listed = pcall(function() return cx.session:sessions() end)
+	for _, info in ipairs(ok and listed or {}) do
+		if info.id == session_id then
+			local tab = (info.tabs or {})[1]
+			local layout = tab and cx.session:layout(tab)
+			if layout and layout.root then return first_leaf(layout.root) end
+		end
+	end
+	return nil
+end
+
+free_session_name = function(cx, base)
+	local used = {}
+	local ok, listed = pcall(function() return cx.sessions:list() end)
+	for _, session in ipairs(ok and listed or {}) do
+		if type(session.name) == "string" then used[session.name] = true end
+	end
+	local name, index = base, 2
+	while used[name] and index <= 20 do
+		name = base .. " (" .. index .. ")"
+		index += 1
+	end
+	return name
+end
+
+-- One planned Tern tab per Herdr tab. Tern has one level of tabs where Herdr
+-- has workspaces holding tabs, so a workspace holding several tabs prefixes its
+-- name; a workspace holding one names its tab from the tab's own label, and a
+-- tab Herdr only numbered keeps the workspace's name.
+local function plan_tabs(label, tabs, snapshot)
+	local plans = {}
+	for _, tab in ipairs(tabs) do
+		local own = if type(tab.label) == "string" and tab.label ~= tostring(tab.number) then tab.label else nil
+		table.insert(plans, {
+			title = if #tabs > 1 then label .. " - " .. (own or tostring(tab.number or 1)) else (own or label),
+			panes = panes_of_tab(snapshot, tab.tab_id),
+		})
+	end
+	return plans
+end
+
+-- Creates one Tern tab per plan (and its panes) in the current session; returns
+-- how many landed and the titles that could not be built.
+local function build_plans(cx, plans)
+	local tabs_made, panes_made, failed = 0, 0, {}
+	for _, plan in ipairs(plans) do
+		local base = cx.layout:new_tab(if plan.panes[1] then launch_of(plan.panes[1]) else nil)
+		local made_tab = base and cx.session:tab_of(base)
+		if made_tab then cx.layout:name_tab(made_tab, plan.title) end
+		if base then
+			tabs_made += 1
+			panes_made += 1
+			for index = 2, #plan.panes do
+				local next_pane = cx.layout:split(base, "right", launch_of(plan.panes[index]))
+				if next_pane then
+					base = next_pane
+					panes_made += 1
+				end
+			end
+		else
+			table.insert(failed, plan.title)
+		end
+	end
+	return tabs_made, panes_made, failed
+end
+
+local function import_into(cx, name, snapshot, wanted, split, destination)
+	cx.hosts:switch("local")
+	local sessions_made, tabs_made, panes_made, skipped = 0, 0, 0, {}
+	local groups = {}
+	for index, workspace in ipairs(in_number_order(copy_of(snapshot.workspaces))) do
+		local label = workspace.label or ("workspace " .. tostring(workspace.number or 1))
+		-- The wanted set is keyed by workspace id, so two workspaces sharing
+		-- a label stay separate choices.
+		if wanted and not wanted[tostring(workspace.workspace_id or index)] then
+			table.insert(skipped, label .. " (not picked)")
+		else
+			local tabs = in_number_order(matching(snapshot.tabs, "workspace_id", workspace.workspace_id))
+			if #tabs == 0 then
+				table.insert(skipped, label .. " (no tabs)")
+			else
+				table.insert(groups, { label = label, plans = plan_tabs(label, tabs, snapshot) })
+			end
+		end
+	end
+	if #groups == 0 then return "Nothing to import: no picked workspace holds tabs." end
+	local targets = {}
+	if destination then
+		-- The picked workspaces join a session that already exists, so every
+		-- group lands in one place and nothing is closed on the way in.
+		local plans = {}
+		for _, group in ipairs(groups) do
+			for _, plan in ipairs(group.plans) do table.insert(plans, plan) end
+		end
+		table.insert(targets, { name = destination, plans = plans, existing = true })
+	elseif split then
+		for _, group in ipairs(groups) do
+			table.insert(targets, { name = "Herdr " .. name .. "/" .. group.label, plans = group.plans })
+		end
+	else
+		local plans = {}
+		for _, group in ipairs(groups) do
+			for _, plan in ipairs(group.plans) do table.insert(plans, plan) end
+		end
+		table.insert(targets, { name = "Herdr " .. name, plans = plans })
+	end
+	for _, target in ipairs(targets) do
+		if target.existing then
+			local switched, err = pcall(function() cx.sessions:switch(target.name) end)
+			if not switched then
+				table.insert(skipped, target.name .. " (" .. tostring(err) .. ")")
+			else
+				local tabs, panes, failed = build_plans(cx, target.plans)
+				tabs_made += tabs
+				panes_made += panes
+				for _, title in ipairs(failed) do table.insert(skipped, title) end
+			end
+		else
+			target.name = free_session_name(cx, target.name)
+			local created, session = pcall(function() return cx.sessions:create({ name = target.name }) end)
+			if not created or type(session) ~= "table" then
+				table.insert(skipped, target.name .. " (" .. tostring(session) .. ")")
+			else
+				sessions_made += 1
+				local stray = initial_pane(cx, session.id)
+				local tabs, panes, failed = build_plans(cx, target.plans)
+				tabs_made += tabs
+				panes_made += panes
+				for _, title in ipairs(failed) do table.insert(skipped, title) end
+				if stray then pcall(function() cx.layout:close(stray) end) end
+			end
+		end
+	end
+	local summary = if destination
+		then 'Imported ' .. name .. ' into "' .. destination .. '": '
+		else 'Imported ' .. name .. ' into Tern as ' .. sessions_made .. " session(s): "
+	summary = summary .. tabs_made .. " tab(s) and " .. panes_made .. " pane(s). Herdr keeps running."
+	if #skipped > 0 then summary = summary .. " Skipped " .. table.concat(skipped, ", ") .. "." end
+	cx:toast("info", "Herdr import finished", summary)
+	return summary
+end
+
+local function import_session(cx, pane, name, wanted, split, destination)
+	importing += 1
+	local revision = importing
+	local what = if wanted then "the picked workspaces from " else "all workspaces from "
+	local where = if destination then ' into "' .. destination .. '"' else " into Tern"
+	draw(cx, pane, "Importing " .. what .. name .. where .. "...")
+	local ok, err = pcall(function()
+		tern.process.run({ herdr_bin(), "--session=" .. name, "api", "snapshot" }, { timeout_ms = 20000 }, function(result, fresh)
+			if revision ~= importing then return end
+			if not fresh then
+				tern.log.warn("Herdr for Tern: the import had no window context to draw in")
+				return
+			end
+			if result.timed_out or result.status ~= 0 then
+				draw(fresh, pane, "Could not read " .. name .. ": "
+					.. (if result.timed_out then "Herdr timed out." else string.sub(result.stderr, 1, 1500)))
+				return
+			end
+			local decoded, data = pcall(tern.json.decode, result.stdout)
+			local snapshot = if decoded and type(data) == "table" and type(data.result) == "table" then data.result.snapshot else nil
+			if type(snapshot) ~= "table" or type(snapshot.workspaces) ~= "table" or #snapshot.workspaces == 0 then
+				draw(fresh, pane, "Herdr returned no session snapshot to import.")
+				return
+			end
+			local drew, failure = pcall(function() return import_into(fresh, name, snapshot, wanted, split, destination) end)
+			if not drew then tern.log.warn("Herdr for Tern: import failed", tostring(failure)) end
+			draw(fresh, pane, if drew then failure else "Could not import " .. name .. ": " .. tostring(failure))
+		end)
+	end)
+	if not ok then
+		tern.log.warn("Herdr for Tern: could not import " .. name, tostring(err))
+		draw(cx, pane, "Could not import " .. name .. ": " .. tostring(err))
+	end
 end
 
 local function refresh(cx, pane)
 	request += 1
 	local revision = request
-	sessions = {}
+	sessions, listed = {}, {}
 	herdr = nil
+	step = "sessions"
 	local bin = herdr_bin()
 	draw(cx, pane, "Reading local Herdr sessions...")
 	local ok, err = pcall(function()
@@ -145,18 +659,19 @@ local function refresh(cx, pane)
 				draw(fresh, pane, "Herdr returned an invalid session list.")
 				return
 			end
-			local rows = {}
-			for _, session in data.sessions do
+			for _, session in ipairs(data.sessions) do
 				if type(session) ~= "table" or not valid_name(session.name) then
 					draw(fresh, pane, "Herdr returned an unsupported session name.")
 					return
 				end
+				session.peek = saved_workspaces(session)
 				sessions[session.name] = session
-				local state = if session.running then "running" else "saved; starts on open"
-				table.insert(rows, if session.connection_error then ui.text(session.name .. ": " .. tostring(session.connection_error))
-					else button(session.name .. " (" .. state .. ")", "open." .. session.name))
+				table.insert(listed, session)
 			end
-			draw(fresh, pane, if #rows == 0 then "No local sessions found." else "Choose a session:", rows)
+			-- Keep the user's pick across refreshes, and start on the first
+			-- session so the actions are never shown without a target.
+			if not (chosen and sessions[chosen]) then chosen = listed[1] and listed[1].name or nil end
+			draw_picker(fresh, pane)
 		end)
 	end)
 	if not ok then
@@ -165,49 +680,156 @@ local function refresh(cx, pane)
 	end
 end
 
-tern.command({ id = "open", title = "Open Herdr Session", icon = "terminal", run = function(cx)
-	-- Listing and attaching must use the same local host.
+local function show(cx, kind)
+	-- Listing, attaching and importing must use the same local host.
 	cx.hosts:switch("local")
+	mode = kind
+	step = "sessions"
 	local pane = own_picker(cx)
 	if pane then
 		cx.layout:focus(pane)
 	else
 		local opened_pane, err = cx.canvas:open({ title = title, view = ui.text("Reading local Herdr sessions..."), how = "tab",
-			about = "Attach existing local Herdr sessions. Their tabs, panes and programs stay in Herdr." })
+			about = about })
 		if not opened_pane then cx:toast("error", "Herdr session picker unavailable", err or "Canvases unavailable."); return end
 		pane = opened_pane
 	end
 	refresh(cx, pane)
-end })
+end
 
-tern.on("canvas_action", function(ev, cx)
-	if ev.owner ~= tern.plugin.id then return nil end
-	if ev.act == "refresh" then refresh(cx, ev.pane); return true end
-	local name = string.match(ev.act, "^open%.(.+)$")
-	if not name then return nil end
-	local session = sessions[name]
-	if not valid_name(name) or not session or session.connection_error then
-		draw(cx, ev.pane, "Session unavailable. Refresh the list.")
-		return true
-	end
+tern.command({ id = "open", title = "Open Herdr in a Tab", icon = "terminal", run = function(cx) show(cx, "open") end })
+
+tern.command({ id = "import", title = "Import Herdr Session into Tern", icon = "terminal", run = function(cx) show(cx, "import") end })
+
+-- Attach a session as a full Herdr client in its own Tern tab, reusing the one
+-- already open for it when it is still current.
+local function open_session(cx, pane, name)
 	local existing = opened[name]
-	local pane = existing and cx.session:pane(existing)
-	local program = program_name(pane and pane.program or "")
-	if pane and (pane.kind == "terminal" or pane.kind == "agent")
+	local client = existing and cx.session:pane(existing)
+	local program = program_name(client and client.program or "")
+	if client and (client.kind == "terminal" or client.kind == "agent")
 		and (program == "herdr" or program == "herdr.exe")
-		and pane.exited == nil and pane.error == nil and pane.at_prompt ~= true then
+		and client.exited == nil and client.error == nil and client.at_prompt ~= true then
 		cx.layout:focus(existing)
-		return true
+		return
 	end
 	local ok, terminal = pcall(function()
 		return cx.hosts:terminal("local", { command = attach_command(name) })
 	end)
 	if not ok then
-		draw(cx, ev.pane, "Could not open " .. name .. ": " .. tostring(terminal))
+		draw(cx, pane, "Could not open " .. name .. ": " .. tostring(terminal), { session_sections(), picker_actions() })
 	else
 		opened[name] = terminal
 		local tab = cx.session:tab_of(terminal)
 		if tab then cx.layout:name_tab(tab, "Herdr / " .. name) end
 	end
-	return true
+end
+
+-- The workspace rows of the import step, all picked to start with; a missing
+-- saved state leaves them unreadable and the import falls back to everything.
+local function import_step(cx, pane, name)
+	local peek = sessions[name] and sessions[name].peek
+	target = nil
+	local hosts_ok, hosts = pcall(function() return cx.hosts:list() end)
+	local local_host
+	for _, host in ipairs(hosts_ok and hosts or {}) do
+		if host.kind == "local" then local_host = host.id end
+	end
+	local ok, listed_sessions = pcall(function() return cx.sessions:list() end)
+	-- An import always lands on the local host, so only its sessions can be a
+	-- destination; another host's session would be switched away from.
+	destinations = {}
+	for _, session in ipairs(ok and listed_sessions or {}) do
+		if local_host == nil or session.host == local_host then table.insert(destinations, session) end
+	end
+	if peek and #peek > 0 then
+		workspaces = {}
+		for _, workspace in ipairs(peek) do
+			table.insert(workspaces, { key = workspace.key, label = workspace.label, tabs = workspace.tabs, selected = true })
+		end
+	else
+		workspaces = nil
+	end
+	step = "workspaces"
+	draw_picker(cx, pane)
+end
+
+tern.on("canvas_action", function(ev, cx)
+	if ev.owner ~= tern.plugin.id then return nil end
+	local pane = ev.pane
+	local name = if type(ev.value) == "string" then ev.value else ""
+	if ev.act == "refresh" then
+		refresh(cx, pane)
+		return true
+	end
+	if ev.act == "back" then
+		step = "sessions"
+		draw_picker(cx, pane)
+		return true
+	end
+	if ev.act == "pick" then
+		if sessions[name] then
+			chosen = name
+			step = "sessions"
+			draw_picker(cx, pane)
+		else
+			draw(cx, pane, "Session unavailable. Refresh the list.", { picker_actions() })
+		end
+		return true
+	end
+	if ev.act == "toggle" then
+		for _, workspace in ipairs(workspaces or {}) do
+			if workspace.key == name then workspace.selected = not workspace.selected end
+		end
+		draw_picker(cx, pane)
+		return true
+	end
+	if ev.act == "dest_new" then
+		target = nil
+		draw_picker(cx, pane)
+		return true
+	end
+	if ev.act == "dest" then
+		target = name
+		draw_picker(cx, pane)
+		return true
+	end
+	if ev.act == "open" then
+		if not valid_name(name) or not sessions[name] then
+			draw(cx, pane, "Session unavailable. Refresh the list.", { picker_actions() })
+			return true
+		end
+		open_session(cx, pane, name)
+		return true
+	end
+	if ev.act == "import" then
+		if not valid_name(name) or not (sessions[name] and sessions[name].running) then
+			draw(cx, pane, "Session unavailable. Refresh the list.", { picker_actions() })
+			return true
+		end
+		chosen = name
+		import_step(cx, pane, name)
+		return true
+	end
+	if ev.act == "import_run" then
+		if not (chosen and sessions[chosen] and sessions[chosen].running) then
+			draw(cx, pane, "Session unavailable. Refresh the list.", { picker_actions() })
+			return true
+		end
+		local wanted = nil
+		if workspaces then
+			wanted = {}
+			for _, workspace in ipairs(workspaces) do
+				if workspace.selected then wanted[workspace.key] = true end
+			end
+			if not next(wanted) then
+				draw_picker(cx, pane)
+				return true
+			end
+		end
+		step = "sessions"
+		import_session(cx, pane, chosen, wanted, ev.value == "split", target)
+		return true
+	end
+	return nil
 end)
