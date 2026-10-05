@@ -383,13 +383,6 @@ local function picked_counts()
 	return workspaces_picked, tabs_picked
 end
 
--- Buttons state the consequence, counts with their plural, so the import
--- choices read as what lands in Tern instead of as mechanism. The panes
--- choice says its mapping: one tab per workspace, its Herdr tabs as panes.
-local function counted(number, word)
-	return number .. " " .. word .. (if number == 1 then "" else "s")
-end
-
 local function picker_actions()
 	local actions = {}
 	if step == "workspaces" then
