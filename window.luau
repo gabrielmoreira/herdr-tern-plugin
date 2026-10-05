@@ -2,6 +2,7 @@ local ui = tern.ui
 local title = "Herdr for Tern"
 local opened, sessions = {}, {}
 local request = 0
+local herdr
 
 local function valid_name(name)
 	return type(name) == "string" and #name > 0 and #name <= 64
@@ -10,6 +11,64 @@ end
 
 local function button(label, action)
 	return ui.el("button", { text = label, actions = { click = action } })
+end
+
+local function version_key(name)
+	local key = {}
+	for digits in string.gmatch(name, "%d+") do table.insert(key, tonumber(digits) or 0) end
+	return key
+end
+
+local function is_newer(a, b)
+	for i = 1, math.max(#a, #b) do
+		local x, y = a[i] or -1, b[i] or -1
+		if x ~= y then return x > y end
+	end
+	return false
+end
+
+local function herdr_in(directory)
+	for _, name in { "herdr.exe", "herdr" } do
+		local path = directory .. "/" .. name
+		if tern.fs.exists(path) then return path end
+	end
+	return nil
+end
+
+-- Tern looks the program up on the PATH of its own process, which a desktop
+-- launch can have smaller than the shell's, so a bare `herdr` may be missing
+-- there. Herdr's own install layout is checked before giving up.
+local function find_herdr()
+	for _, name in { "HERDR_BIN", "HERDR_BIN_PATH" } do
+		local explicit = tern.getenv(name)
+		if explicit and #explicit > 0 and tern.fs.exists(explicit) then return explicit end
+	end
+	local home = tern.getenv("USERPROFILE") or tern.getenv("HOME")
+	local standalone = home and (home .. "/.herdr/packages/standalone")
+	if standalone then
+		local current = herdr_in(standalone .. "/current")
+		if current then return current end
+		local listed, entries = pcall(tern.fs.list, standalone .. "/releases")
+		local best, best_key
+		for _, entry in listed and entries or {} do
+			local path = herdr_in(standalone .. "/releases/" .. entry)
+			local key = version_key(entry)
+			if path and (not best or is_newer(key, best_key)) then best, best_key = path, key end
+		end
+		if best then return best end
+	end
+	return "herdr"
+end
+
+local function herdr_bin()
+	if not herdr then herdr = find_herdr() end
+	return herdr
+end
+
+local function attach_command(name)
+	local bin = herdr_bin()
+	if string.find(bin, "%s") then bin = '"' .. bin .. '"' end
+	return bin .. " --session=" .. name
 end
 
 -- Draw through canvas:set, which the daemon authorises from the stored creator
@@ -32,13 +91,19 @@ local function own_picker(cx)
 	return nil
 end
 
+local function program_name(program)
+	return string.lower(string.match(program, "([^/\\]+)$") or program)
+end
+
 local function refresh(cx, pane)
 	request += 1
 	local revision = request
 	sessions = {}
+	herdr = nil
+	local bin = herdr_bin()
 	draw(cx, pane, "Reading local Herdr sessions...")
 	local ok, err = pcall(function()
-		tern.process.run({ "herdr", "session", "list", "--json" }, { timeout_ms = 10000 }, function(result, fresh)
+		tern.process.run({ bin, "session", "list", "--json" }, { timeout_ms = 10000 }, function(result, fresh)
 			if revision ~= request then return end
 			if not fresh then
 				tern.log.warn("Herdr for Tern: the session list had no window context to draw in")
@@ -67,7 +132,9 @@ local function refresh(cx, pane)
 			draw(fresh, pane, if #rows == 0 then "No local sessions found." else "Choose a session:", rows)
 		end)
 	end)
-	if not ok then draw(cx, pane, "Could not run herdr. Check Tern's PATH. " .. tostring(err)) end
+	if not ok then
+		draw(cx, pane, "Could not run " .. bin .. ". Put Herdr on the PATH Tern sees, or set HERDR_BIN. " .. tostring(err))
+	end
 end
 
 tern.command({ id = "open", title = "Open Herdr Session", icon = "terminal", run = function(cx)
@@ -97,7 +164,7 @@ tern.on("canvas_action", function(ev, cx)
 	end
 	local existing = opened[name]
 	local pane = existing and cx.session:pane(existing)
-	local program = string.lower(pane and pane.program or "")
+	local program = program_name(pane and pane.program or "")
 	if pane and (pane.kind == "terminal" or pane.kind == "agent")
 		and (program == "herdr" or program == "herdr.exe")
 		and pane.exited == nil and pane.error == nil and pane.at_prompt ~= true then
@@ -105,7 +172,7 @@ tern.on("canvas_action", function(ev, cx)
 		return true
 	end
 	local ok, terminal = pcall(function()
-		return cx.hosts:terminal("local", { command = "herdr --session=" .. name })
+		return cx.hosts:terminal("local", { command = attach_command(name) })
 	end)
 	if not ok then
 		draw(cx, ev.pane, "Could not open " .. name .. ": " .. tostring(terminal))

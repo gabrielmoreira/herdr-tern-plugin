@@ -6,6 +6,10 @@ Keep the plugin minimal: `plugin.toml` and one `window.luau` at the repository r
 
 Draw with `cx.canvas:set` and treat a thrown error as the failure signal. Do not gate drawing on `cx.canvas:get`: that reads the window's replica, which can still be empty when a process callback runs, and a guard on it silently drops the update with nothing logged.
 
+## Finding herdr
+
+Tern looks a program up on the PATH of its own process, and a desktop launch can have a smaller one than your shell, so the bare name can be missing there. The plugin therefore checks `HERDR_BIN`, then `HERDR_BIN_PATH` (which Herdr itself sets), then `~/.herdr/packages/standalone/current`, then the newest release under `~/.herdr/packages/standalone/releases`, and only then the bare name. Resolve once and reuse the result for both the session list and the attach command.
+
 ## Local smoke test
 
 Use working desktop Tern and Herdr installations. Review mise's tool-pruning settings first; if running mise could prune unrelated tools, fix that setup or use Bun directly instead.

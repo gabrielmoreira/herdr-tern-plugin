@@ -6,7 +6,7 @@ Pick a session and keep going. Herdr keeps its own workspaces, tabs, panes, and 
 
 ## Get started
 
-You'll need desktop Tern, Git, and Herdr, with `herdr` on Tern's PATH.
+You'll need desktop Tern, Git, and Herdr. The plugin uses `herdr` from Tern's PATH, or from Herdr's own install folder; set `HERDR_BIN` to point at it yourself.
 
 ```sh
 tern plugin install github.com/gabrielmoreira/herdr-tern-plugin
